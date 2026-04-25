@@ -20,7 +20,10 @@ const PRESET_CATEGORIES = [
 // ─── Utilities ────────────────────────────────────────────────────────────────
 const initials = (name: string) => name.trim().split(/\s+/).map((w: string) => w[0]).join('').toUpperCase().slice(0, 2);
 const fmt = (n: number) => Number(n).toLocaleString('en-IN', { maximumFractionDigits: 2 });
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
 const formatDate = (d: string) => new Date(d + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
 const getCategoryIcon = (cat: string) => PRESET_CATEGORIES.find(c => c.name.toLowerCase() === (cat || '').toLowerCase())?.emoji || '📦';
 
