@@ -147,11 +147,18 @@ export default function App() {
 
   const [exportModal, setExportModal] = useState(false);
   const [exportMode, setExportMode]   = useState<'month' | 'range'>('month');
-  const [exportMonth, setExportMonth] = useState(new Date().getMonth() + 1);
-  const [exportYear, setExportYear]   = useState(new Date().getFullYear());
+  const [exportMonth, setExportMonth] = useState(() => {
+    const d = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+    return d.getMonth() + 1;
+  });
+  const [exportYear, setExportYear]   = useState(() => {
+    const d = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+    return d.getFullYear();
+  });
   const [exportFrom, setExportFrom]   = useState('');
   const [exportTo, setExportTo]       = useState('');
   const [exportDetailed, setExportDetailed] = useState(false);
+  const [exportAllModal, setExportAllModal] = useState(false);
 
   const [toasts, setToasts]     = useState<ToastItem[]>([]);
   const [installPrompt, setInstallPrompt] = useState<Event | null>(null);
@@ -206,15 +213,21 @@ export default function App() {
   };
 
   const buildParams = () => {
-    const t = today();
+    const t = today(); // already IST via the today() utility
     if (dateRange === 'today') return `&date_from=${t}&date_to=${t}`;
     if (dateRange === 'week') {
-      const from = new Date(); from.setDate(from.getDate() - from.getDay());
-      return `&date_from=${from.toISOString().slice(0,10)}&date_to=${t}`;
+      // Compute Monday of current week in IST
+      const nowIST = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+      const dayOfWeek = nowIST.getDay(); // 0=Sun
+      nowIST.setDate(nowIST.getDate() - ((dayOfWeek + 6) % 7)); // roll back to Monday
+      const from = nowIST.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+      return `&date_from=${from}&date_to=${t}`;
     }
     if (dateRange === 'month') {
-      const from = new Date(); from.setDate(1);
-      return `&date_from=${from.toISOString().slice(0,10)}&date_to=${t}`;
+      // First day of current month in IST
+      const nowIST = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+      const from = `${nowIST.getFullYear()}-${String(nowIST.getMonth() + 1).padStart(2, '0')}-01`;
+      return `&date_from=${from}&date_to=${t}`;
     }
     if (dateRange === 'custom' && filterFrom) {
       return `&date_from=${filterFrom}${filterTo ? `&date_to=${filterTo}` : ''}`;
@@ -346,6 +359,20 @@ export default function App() {
     window.open(url, '_blank');
   };
 
+  // ── Export All Members PDF ────────────────────────────────────────────────
+  const doExportAll = () => {
+    let url = `/api/export/pdf/all?detailed=${exportDetailed}`;
+    if (exportMode === 'month') {
+      url += `&mode=month&month=${String(exportMonth).padStart(2, '0')}&year=${exportYear}`;
+    } else {
+      if (!exportFrom || !exportTo) { toast('Please select both dates', 'error'); return; }
+      if (exportFrom > exportTo) { toast('From date must be before To date', 'error'); return; }
+      url += `&mode=range&date_from=${exportFrom}&date_to=${exportTo}`;
+    }
+    toast('Opening all-members report…'); setExportAllModal(false);
+    window.open(url, '_blank');
+  };
+
   // ── Chart ─────────────────────────────────────────────────────────────────
   const chartDays = (() => {
     const days = [];
@@ -447,12 +474,20 @@ export default function App() {
             <div className="app-header">
               <h1>Sekra</h1>
               <div className="header-meta">
-                <button className="btn-icon" title="Export PDF" onClick={() => {
+                <button className="btn-icon" title="Export My PDF" onClick={() => {
                   setExportFrom(new Date(new Date().setDate(1)).toISOString().slice(0,10));
                   setExportTo(today()); setExportModal(true);
                 }}>
                   <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                  </svg>
+                </button>
+                <button className="btn-icon" title="Export All Members PDF" onClick={() => {
+                  setExportFrom(new Date(new Date().setDate(1)).toISOString().slice(0,10));
+                  setExportTo(today()); setExportAllModal(true);
+                }}>
+                  <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/>
                   </svg>
                 </button>
                 <div className="user-badge" onClick={() => setScreen('profile')}>
@@ -599,7 +634,10 @@ export default function App() {
               </div>
               <div className="profile-actions">
                 <button className="btn btn-ghost" onClick={() => { setExportFrom(new Date(new Date().setDate(1)).toISOString().slice(0,10)); setExportTo(today()); setExportModal(true); }}>
-                  📄 Export PDF Report
+                  📄 Export My Report
+                </button>
+                <button className="btn btn-ghost" onClick={() => { setExportFrom(new Date(new Date().setDate(1)).toISOString().slice(0,10)); setExportTo(today()); setExportAllModal(true); }}>
+                  👥 Export All Members
                 </button>
                 <button className="btn btn-danger" style={{ width: '100%' }} onClick={logout}>Switch User</button>
               </div>
@@ -722,6 +760,62 @@ export default function App() {
             </label>
             <button className="btn btn-primary" style={{ marginTop: 16 }} onClick={doExport}>
               📄 Generate Report
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* ── EXPORT ALL MEMBERS MODAL ── */}
+      <div className={`modal-overlay${exportAllModal ? ' open' : ''}`} onClick={e => { if (e.target === e.currentTarget) setExportAllModal(false); }}>
+        <div className="modal-sheet">
+          <div className="modal-handle" />
+          <div className="modal-header">
+            <div className="modal-title">👥 All Members Report</div>
+            <button className="modal-close" onClick={() => setExportAllModal(false)}>✕</button>
+          </div>
+          <div className="modal-body">
+            <div className="export-toggle">
+              <button className={exportMode === 'month' ? 'active' : ''} onClick={() => setExportMode('month')}>By Month</button>
+              <button className={exportMode === 'range' ? 'active' : ''} onClick={() => setExportMode('range')}>Date Range</button>
+            </div>
+            {exportMode === 'month' ? (
+              <div className="export-row">
+                <div className="form-group">
+                  <label>Month</label>
+                  <select className="form-control" value={exportMonth} onChange={e => setExportMonth(Number(e.target.value))}>
+                    {['January','February','March','April','May','June','July','August','September','October','November','December'].map((m, i) =>
+                      <option key={i} value={i + 1}>{m}</option>)}
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label>Year</label>
+                  <select className="form-control" value={exportYear} onChange={e => setExportYear(Number(e.target.value))}>
+                    {Array.from({ length: 4 }, (_, i) => new Date().getFullYear() - i).map(y =>
+                      <option key={y} value={y}>{y}</option>)}
+                  </select>
+                </div>
+              </div>
+            ) : (
+              <div className="export-row">
+                <div className="form-group">
+                  <label>From</label>
+                  <input type="date" className="form-control" value={exportFrom} onChange={e => setExportFrom(e.target.value)} />
+                </div>
+                <div className="form-group">
+                  <label>To</label>
+                  <input type="date" className="form-control" value={exportTo} onChange={e => setExportTo(e.target.value)} />
+                </div>
+              </div>
+            )}
+            <label className="export-checkbox-row">
+              <input type="checkbox" checked={exportDetailed} onChange={e => setExportDetailed(e.target.checked)} />
+              <div className="export-checkbox-label">
+                <span>Detailed view</span>
+                <span className="export-checkbox-sub">Include individual transactions inside each category</span>
+              </div>
+            </label>
+            <button className="btn btn-primary" style={{ marginTop: 16 }} onClick={doExportAll}>
+              👥 Generate All Members Report
             </button>
           </div>
         </div>

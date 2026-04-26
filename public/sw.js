@@ -1,15 +1,11 @@
-/* ─── Paisa Budget PWA — Service Worker ─────────────────────────────────────── */
+/* ─── Sekra Budget Tracker — Service Worker ─────────────────────────────────── */
 
-const CACHE_NAME = "paisa-v1";
+const CACHE_NAME = "sekra-v1";
 
 // Files to cache for offline use
 const STATIC_ASSETS = [
   "/",
-  "/index.html",
-  "/styles.css",
-  "/app.js",
   "/manifest.json",
-  "https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&display=swap"
 ];
 
 // ─── Install: cache static assets ─────────────────────────────────────────────
@@ -43,8 +39,8 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
 
-  // Always go network-first for API calls
-  if (url.pathname.startsWith("/api/")) {
+  // Always go network-first for API calls and Next.js internals
+  if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/_next/")) {
     event.respondWith(
       fetch(event.request)
         .then((response) => {
