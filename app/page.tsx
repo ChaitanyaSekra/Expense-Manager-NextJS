@@ -129,10 +129,11 @@ export default function App() {
   const [pinUser, setPinUser]   = useState<User | null>(null);
 
   const [expData, setExpData]   = useState<ExpensesData | null>(null);
+  const [allTimeData, setAllTimeData] = useState<ExpensesData | null>(null);
   const [loading, setLoading]   = useState(false);
   const [chartData, setChartData] = useState<{ date: string; total: number }[]>([]);
 
-  const [dateRange, setDateRange] = useState<'all' | 'today' | 'week' | 'month' | 'custom'>('all');
+  const [dateRange, setDateRange] = useState<'all' | 'today' | 'week' | 'month' | 'custom'>('today');
   const [filterFrom, setFilterFrom] = useState('');
   const [filterTo, setFilterTo]   = useState('');
 
@@ -204,7 +205,7 @@ export default function App() {
 
   // Load expenses when user / date filter changes
   useEffect(() => {
-    if (currentUser && screen === 'dashboard') { loadExpenses(); loadChart(); }
+    if (currentUser && screen === 'dashboard') { loadExpenses(); loadChart(); loadAllTime(); }
   }, [currentUser, screen, dateRange, filterFrom, filterTo]);
 
   // ── API helpers ───────────────────────────────────────────────────────────
@@ -253,6 +254,14 @@ export default function App() {
       }
     } catch (e: unknown) { toast(e instanceof Error ? e.message : 'Failed to load', 'error'); }
     finally { setLoading(false); }
+  };
+
+  const loadAllTime = async () => {
+    if (!currentUser) return;
+    try {
+      const data = await apiFetch(`/api/expenses/${currentUser.id}?grouped=true`);
+      setAllTimeData(data);
+    } catch {}
   };
 
   const loadChart = async () => {
@@ -388,10 +397,12 @@ export default function App() {
   const chartMax = Math.max(...chartDays.map(d => d.total), 1);
   const dayNames = ['S','M','T','W','T','F','S'];
 
-  const balance  = expData?.balance      || 0;
-  const income   = expData?.total_income  || 0;
-  const expense  = expData?.total_expense || 0;
+  const balance  = allTimeData?.balance      || 0;
+  const income   = allTimeData?.total_income  || 0;
+  const expense  = allTimeData?.total_expense || 0;
   const count    = (expData?.groups || []).reduce((s, g) => s + g.expenses.length, 0);
+  const rangedIncome  = expData?.total_income  || 0;
+  const rangedExpense = expData?.total_expense || 0;
 
   // ─── Render ───────────────────────────────────────────────────────────────
   return (
@@ -570,6 +581,15 @@ export default function App() {
                   </div>
                 )}
               </div>
+
+              {/* Range summary line */}
+              {dateRange !== 'all' && expData && (
+                <div className="range-summary">
+                  <span className="range-income">↑ ₹{fmt(rangedIncome)} earned</span>
+                  <span className="range-dot">·</span>
+                  <span className="range-expense">↓ ₹{fmt(rangedExpense)} spent</span>
+                </div>
+              )}
 
               {/* Categories */}
               <div className="categories-section">

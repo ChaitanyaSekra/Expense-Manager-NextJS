@@ -589,3 +589,15 @@ select.form-control option { background: var(--bg-card); }
 }
 
 .hidden { display: none !important; }
+
+.range-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px 2px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+.range-income  { color: var(--success); }
+.range-expense { color: var(--danger); }
+.range-dot     { color: var(--text-muted); }
