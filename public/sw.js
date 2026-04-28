@@ -1,77 +1,72 @@
-/* ─── Sekra Budget Tracker — Service Worker ─────────────────────────────────── */
+// ── Cache name is injected at build time by next.config.mjs ──────────────────
+// __SEKRA_VERSION__ is replaced with the git commit SHA (or timestamp) on each
+// Vercel deploy, so every new deploy gets a fresh cache name and the old one
+// is deleted automatically.
+const CACHE_NAME = 'sekra-moi5nixn';
 
-const CACHE_NAME = "sekra-v1";
+// Assets to pre-cache on install
+const PRECACHE_URLS = ['/', '/manifest.json'];
 
-// Files to cache for offline use
-const STATIC_ASSETS = [
-  "/",
-  "/manifest.json",
-];
-
-// ─── Install: cache static assets ─────────────────────────────────────────────
-self.addEventListener("install", (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      // Cache what we can; ignore failures for fonts (network-dependent)
-      return Promise.allSettled(
-        STATIC_ASSETS.map((url) => cache.add(url).catch(() => {}))
-      );
-    })
-  );
+// ── Install: pre-cache shell assets ──────────────────────────────────────────
+self.addEventListener('install', event => {
+  // Skip waiting so the new SW activates immediately without requiring a tab refresh
   self.skipWaiting();
+  event.waitUntil(
+    caches.open(CACHE_NAME).then(cache => cache.addAll(PRECACHE_URLS))
+  );
 });
 
-// ─── Activate: clean old caches ────────────────────────────────────────────────
-self.addEventListener("activate", (event) => {
+// ── Activate: delete ALL old sekra-* caches ──────────────────────────────────
+self.addEventListener('activate', event => {
   event.waitUntil(
-    caches.keys().then((keys) =>
+    caches.keys().then(keys =>
       Promise.all(
         keys
-          .filter((key) => key !== CACHE_NAME)
-          .map((key) => caches.delete(key))
+          .filter(key => key.startsWith('sekra-') && key !== CACHE_NAME)
+          .map(key => {
+            console.log('[SW] Deleting old cache:', key);
+            return caches.delete(key);
+          })
       )
-    )
+    ).then(() => self.clients.claim())  // take control of all open tabs immediately
   );
-  self.clients.claim();
 });
 
-// ─── Fetch: network-first for API, cache-first for static ─────────────────────
-self.addEventListener("fetch", (event) => {
-  const url = new URL(event.request.url);
+// ── Fetch: network-first for Next.js internals, cache-first for everything else
+self.addEventListener('fetch', event => {
+  const { request } = event;
+  const url = new URL(request.url);
 
-  // Always go network-first for API calls and Next.js internals
-  if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/_next/")) {
+  // Never intercept non-GET or cross-origin requests
+  if (request.method !== 'GET' || url.origin !== self.location.origin) return;
+
+  // Network-first for Next.js build chunks and API routes (always fresh)
+  if (url.pathname.startsWith('/_next/') || url.pathname.startsWith('/api/')) {
     event.respondWith(
-      fetch(event.request)
-        .then((response) => {
-          // Cache successful GET responses for offline viewing
-          if (event.request.method === "GET" && response.ok) {
-            const clone = response.clone();
-            caches.open(CACHE_NAME).then((cache) =>
-              cache.put(event.request, clone)
-            );
+      fetch(request)
+        .then(res => {
+          // Cache successful _next responses for offline fallback
+          if (res.ok && url.pathname.startsWith('/_next/static/')) {
+            const clone = res.clone();
+            caches.open(CACHE_NAME).then(cache => cache.put(request, clone));
           }
-          return response;
+          return res;
         })
-        .catch(() =>
-          // Offline fallback: serve from cache
-          caches.match(event.request).then(
-            (cached) =>
-              cached ||
-              new Response(
-                JSON.stringify({ error: "Offline — cached data unavailable" }),
-                { headers: { "Content-Type": "application/json" } }
-              )
-          )
-        )
+        .catch(() => caches.match(request))
     );
     return;
   }
 
-  // Cache-first for static files
+  // Cache-first for everything else (icons, manifest, fonts, etc.)
   event.respondWith(
-    caches.match(event.request).then(
-      (cached) => cached || fetch(event.request)
-    )
+    caches.match(request).then(cached => {
+      if (cached) return cached;
+      return fetch(request).then(res => {
+        if (!res.ok) return res;
+        const clone = res.clone();
+        caches.open(CACHE_NAME).then(cache => cache.put(request, clone));
+        return res;
+      });
+    })
   );
 });
