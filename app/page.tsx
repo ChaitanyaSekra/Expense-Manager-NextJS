@@ -4,18 +4,11 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 interface User { id: number; name: string; }
+interface Category { id: string; name: string; emoji: string; }
 interface Expense { id: number; amount: number; type: 'expense' | 'income'; category: string; description: string; date: string; }
 interface ExpenseGroup { category: string; net: number; total: number; _is_income: boolean; expenses: Expense[]; }
 interface ExpensesData { groups: ExpenseGroup[]; total_income: number; total_expense: number; balance: number; used_categories: string[]; }
 interface ToastItem { id: number; msg: string; type: 'success' | 'error'; }
-
-// ─── Constants ────────────────────────────────────────────────────────────────
-const PRESET_CATEGORIES = [
-  { name: 'Len-Den', emoji: '🤝' }, { name: 'Transport', emoji: '🚌' },
-  { name: 'Food', emoji: '🍽️' },    { name: 'Shopping', emoji: '🛍️' },
-  { name: 'Groceries', emoji: '🛒' }, { name: 'Bills', emoji: '💡' },
-  { name: 'Entertainment', emoji: '🎉' },
-];
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 const initials = (name: string) => name.trim().split(/\s+/).map((w: string) => w[0]).join('').toUpperCase().slice(0, 2);
@@ -25,7 +18,6 @@ const today = () => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 const formatDate = (d: string) => new Date(d + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
-const getCategoryIcon = (cat: string) => PRESET_CATEGORIES.find(c => c.name.toLowerCase() === (cat || '').toLowerCase())?.emoji || '📦';
 
 async function apiFetch(path: string, options: RequestInit = {}) {
   const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
@@ -58,19 +50,19 @@ function PinKeypad({ onKey }: { onKey: (k: string) => void }) {
   );
 }
 
-function CategoryDropdown({ value, onChange, customCats, onAddCustom }:
-  { value: string; onChange: (v: string) => void; customCats: string[]; onAddCustom: (v: string) => void }) {
+// ─── Category Dropdown ────────────────────────────────────────────────────────
+function CategoryDropdown({ value, onChange, categories, onAddNew }:
+  { value: string; onChange: (v: string) => void; categories: Category[]; onAddNew: (name: string) => Promise<void> }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
+  const [adding, setAdding] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
 
-  const allCats = [
-    ...PRESET_CATEGORIES.map(c => ({ ...c, custom: false })),
-    ...customCats.filter(n => !PRESET_CATEGORIES.find(p => p.name === n)).map(n => ({ name: n, emoji: '🏷️', custom: true })),
-  ];
-  const filtered = query ? allCats.filter(c => c.name.toLowerCase().includes(query.toLowerCase())) : allCats;
-  const exactMatch = allCats.some(c => c.name.toLowerCase() === query.toLowerCase());
-  const selectedCat = allCats.find(c => c.name === value);
+  const filtered = query
+    ? categories.filter(c => c.name.toLowerCase().includes(query.toLowerCase()))
+    : categories;
+  const exactMatch = categories.some(c => c.name.toLowerCase() === query.toLowerCase());
+  const selectedCat = categories.find(c => c.name === value);
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -79,6 +71,19 @@ function CategoryDropdown({ value, onChange, customCats, onAddCustom }:
     document.addEventListener('click', handler);
     return () => document.removeEventListener('click', handler);
   }, []);
+
+  const handleAddNew = async () => {
+    if (!query.trim() || exactMatch || adding) return;
+    setAdding(true);
+    try {
+      await onAddNew(query.trim());
+      onChange(query.trim());
+      setOpen(false);
+      setQuery('');
+    } finally {
+      setAdding(false);
+    }
+  };
 
   return (
     <div className="cat-dropdown-wrap" ref={wrapRef}>
@@ -98,7 +103,7 @@ function CategoryDropdown({ value, onChange, customCats, onAddCustom }:
           </div>
           <div className="cat-dropdown-list">
             {filtered.map(cat => (
-              <div key={cat.name} className={`cat-option${value === cat.name ? ' selected' : ''}`}
+              <div key={cat.id} className={`cat-option${value === cat.name ? ' selected' : ''}`}
                 onClick={() => { onChange(cat.name); setOpen(false); setQuery(''); }}>
                 <span className="cat-emoji">{cat.emoji}</span>{cat.name}
               </div>
@@ -106,13 +111,230 @@ function CategoryDropdown({ value, onChange, customCats, onAddCustom }:
           </div>
           {query && !exactMatch && (
             <div className="cat-add-custom">
-              <button onClick={() => { onAddCustom(query); onChange(query); setOpen(false); setQuery(''); }}>
-                ＋ Add &quot;{query}&quot;
+              <button onClick={handleAddNew} disabled={adding}>
+                {adding ? '…' : `＋ Add "${query}"`}
               </button>
             </div>
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Manage Categories Modal ──────────────────────────────────────────────────
+function ManageCategoriesModal({ open, onClose, categories, onRefresh, toast }:
+  {
+    open: boolean;
+    onClose: () => void;
+    categories: Category[];
+    onRefresh: () => void;
+    toast: (msg: string, type?: 'success' | 'error') => void;
+  }) {
+  const COMMON_EMOJIS = ['📦','🏷️','🏠','💊','✈️','🎓','🐾','💪','🎮','📱','🧴','🔧','💰','🎁','🍺','☕','🌿','🚗'];
+
+  const [editId, setEditId] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editEmoji, setEditEmoji] = useState('');
+  const [newName, setNewName] = useState('');
+  const [newEmoji, setNewEmoji] = useState('📦');
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [showNewForm, setShowNewForm] = useState(false);
+  const [showEmojiPicker, setShowEmojiPicker] = useState<'new' | 'edit' | null>(null);
+
+  // Reset when modal closes
+  useEffect(() => {
+    if (!open) {
+      setEditId(null); setShowNewForm(false);
+      setNewName(''); setNewEmoji('📦');
+      setShowEmojiPicker(null);
+    }
+  }, [open]);
+
+  const startEdit = (cat: Category) => {
+    setEditId(cat.id);
+    setEditName(cat.name);
+    setEditEmoji(cat.emoji);
+    setShowEmojiPicker(null);
+    setShowNewForm(false);
+  };
+
+  const cancelEdit = () => { setEditId(null); setShowEmojiPicker(null); };
+
+  const saveEdit = async () => {
+    if (!editId || !editName.trim() || !editEmoji.trim()) return;
+    setSaving(true);
+    try {
+      await apiFetch(`/api/categories/${editId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ name: editName.trim(), emoji: editEmoji.trim() }),
+      });
+      toast('Category updated ✓');
+      setEditId(null);
+      onRefresh();
+    } catch (e: unknown) {
+      toast(e instanceof Error ? e.message : 'Update failed', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const deleteCategory = async (cat: Category) => {
+    if (!confirm(`Delete "${cat.name}"?`)) return;
+    setDeleting(cat.id);
+    try {
+      await apiFetch(`/api/categories/${cat.id}`, { method: 'DELETE' });
+      toast('Category deleted');
+      onRefresh();
+    } catch (e: unknown) {
+      toast(e instanceof Error ? e.message : 'Delete failed', 'error');
+    } finally {
+      setDeleting(null);
+    }
+  };
+
+  const addNew = async () => {
+    if (!newName.trim() || !newEmoji.trim()) return;
+    setSaving(true);
+    try {
+      await apiFetch('/api/categories', {
+        method: 'POST',
+        body: JSON.stringify({ name: newName.trim(), emoji: newEmoji.trim() }),
+      });
+      toast('Category added ✓');
+      setNewName(''); setNewEmoji('📦');
+      setShowNewForm(false);
+      setShowEmojiPicker(null);
+      onRefresh();
+    } catch (e: unknown) {
+      toast(e instanceof Error ? e.message : 'Add failed', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className={`modal-overlay${open ? ' open' : ''}`} onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="modal-sheet">
+        <div className="modal-handle" />
+        <div className="modal-header">
+          <div className="modal-title">🏷️ Categories</div>
+          <button className="modal-close" onClick={onClose}>✕</button>
+        </div>
+        <div className="modal-body">
+
+          {/* Category list */}
+          <div className="cat-manage-list">
+            {categories.map(cat => (
+              <div key={cat.id} className="cat-manage-row">
+                {editId === cat.id ? (
+                  /* ── Edit row ── */
+                  <div className="cat-manage-edit-form">
+                    <div className="cat-manage-edit-top">
+                      {/* Emoji button */}
+                      <div className="cat-manage-emoji-wrap">
+                        <button className="cat-manage-emoji-btn"
+                          onClick={() => setShowEmojiPicker(p => p === 'edit' ? null : 'edit')}>
+                          {editEmoji}
+                        </button>
+                        {showEmojiPicker === 'edit' && (
+                          <div className="emoji-picker">
+                            {COMMON_EMOJIS.map(e => (
+                              <button key={e} className={`emoji-opt${editEmoji === e ? ' active' : ''}`}
+                                onClick={() => { setEditEmoji(e); setShowEmojiPicker(null); }}>{e}</button>
+                            ))}
+                            <input className="emoji-custom-input" placeholder="or type…"
+                              onChange={ev => { if (ev.target.value) { setEditEmoji(ev.target.value); setShowEmojiPicker(null); } }} />
+                          </div>
+                        )}
+                      </div>
+                      <input className="form-control cat-manage-name-input" value={editName}
+                        onChange={e => setEditName(e.target.value)} placeholder="Category name" />
+                    </div>
+                    <div className="cat-manage-edit-actions">
+                      <button className="btn btn-ghost" style={{ flex: 1, padding: '9px' }} onClick={cancelEdit}>Cancel</button>
+                      <button className="btn btn-primary" style={{ flex: 1, padding: '9px' }}
+                        onClick={saveEdit} disabled={saving || !editName.trim()}>
+                        {saving ? '…' : 'Save'}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  /* ── Display row ── */
+                  <>
+                    <div className="cat-manage-info">
+                      <span className="cat-manage-emoji">{cat.emoji}</span>
+                      <span className="cat-manage-name">{cat.name}</span>
+                    </div>
+                    <div className="cat-manage-actions">
+                      <button className="btn-icon" title="Edit" onClick={() => startEdit(cat)}>
+                        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
+                        </svg>
+                      </button>
+                      <button className="btn-icon" title="Delete"
+                        style={{ color: deleting === cat.id ? 'var(--text-sub)' : 'var(--danger)' }}
+                        disabled={deleting === cat.id}
+                        onClick={() => deleteCategory(cat)}>
+                        {deleting === cat.id
+                          ? <div className="spinner" style={{ width: 14, height: 14, borderWidth: 1.5 }} />
+                          : (
+                            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                            </svg>
+                          )}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {/* Add new category */}
+          {showNewForm ? (
+            <div className="cat-manage-new-form">
+              <div className="cat-manage-new-label">New Category</div>
+              <div className="cat-manage-edit-top">
+                <div className="cat-manage-emoji-wrap">
+                  <button className="cat-manage-emoji-btn"
+                    onClick={() => setShowEmojiPicker(p => p === 'new' ? null : 'new')}>
+                    {newEmoji}
+                  </button>
+                  {showEmojiPicker === 'new' && (
+                    <div className="emoji-picker">
+                      {COMMON_EMOJIS.map(e => (
+                        <button key={e} className={`emoji-opt${newEmoji === e ? ' active' : ''}`}
+                          onClick={() => { setNewEmoji(e); setShowEmojiPicker(null); }}>{e}</button>
+                      ))}
+                      <input className="emoji-custom-input" placeholder="or type…"
+                        onChange={ev => { if (ev.target.value) { setNewEmoji(ev.target.value); setShowEmojiPicker(null); } }} />
+                    </div>
+                  )}
+                </div>
+                <input className="form-control cat-manage-name-input" value={newName}
+                  onChange={e => setNewName(e.target.value)} placeholder="Category name" autoFocus />
+              </div>
+              <div className="cat-manage-edit-actions">
+                <button className="btn btn-ghost" style={{ flex: 1, padding: '9px' }}
+                  onClick={() => { setShowNewForm(false); setNewName(''); setNewEmoji('📦'); setShowEmojiPicker(null); }}>
+                  Cancel
+                </button>
+                <button className="btn btn-primary" style={{ flex: 1, padding: '9px' }}
+                  onClick={addNew} disabled={saving || !newName.trim()}>
+                  {saving ? '…' : 'Add'}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button className="cat-manage-add-btn" onClick={() => { setShowNewForm(true); setEditId(null); }}>
+              ＋ New Category
+            </button>
+          )}
+
+        </div>
+      </div>
     </div>
   );
 }
@@ -144,7 +366,10 @@ export default function App() {
   const [expDate, setExpDate]   = useState(today());
   const [entryType, setEntryType] = useState<'expense' | 'income'>('expense');
   const [category, setCategory] = useState('');
-  const [customCats, setCustomCats] = useState<string[]>([]);
+
+  // ── Categories from DB ────────────────────────────────────────────────────
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [catManageOpen, setCatManageOpen] = useState(false);
 
   const [exportModal, setExportModal] = useState(false);
   const [exportMode, setExportMode]   = useState<'month' | 'range'>('month');
@@ -175,14 +400,11 @@ export default function App() {
 
   // ── Init ──────────────────────────────────────────────────────────────────
   useEffect(() => {
-    // Service worker
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 
-    // Offline detection
     const upd = () => setOffline(!navigator.onLine);
     window.addEventListener('online', upd); window.addEventListener('offline', upd); upd();
 
-    // PWA install
     const handler = (e: Event) => {
       e.preventDefault(); setInstallPrompt(e);
       if (!localStorage.getItem('sekra_install_dismissed')) setShowInstall(true);
@@ -190,20 +412,18 @@ export default function App() {
     window.addEventListener('beforeinstallprompt', handler);
     window.addEventListener('appinstalled', () => setShowInstall(false));
 
-    // Restore state
     const saved = localStorage.getItem('sekra_user');
     if (saved) { const u = JSON.parse(saved); setCurrentUser(u); setScreen('dashboard'); }
-    const cats = localStorage.getItem('sekra_custom_cats');
-    if (cats) setCustomCats(JSON.parse(cats));
 
     loadUsers();
+    loadCategories();
+
     return () => {
       window.removeEventListener('online', upd); window.removeEventListener('offline', upd);
       window.removeEventListener('beforeinstallprompt', handler);
     };
   }, []);
 
-  // Load expenses when user / date filter changes
   useEffect(() => {
     if (currentUser && screen === 'dashboard') { loadExpenses(); loadChart(); loadAllTime(); }
   }, [currentUser, screen, dateRange, filterFrom, filterTo]);
@@ -213,19 +433,25 @@ export default function App() {
     try { setUsers(await apiFetch('/api/users')); } catch {}
   };
 
+  const loadCategories = async () => {
+    try { setCategories(await apiFetch('/api/categories')); } catch {}
+  };
+
+  // Helper: get emoji for a category name from the loaded list
+  const getCategoryEmoji = (catName: string) =>
+    categories.find(c => c.name.toLowerCase() === catName.toLowerCase())?.emoji || '📦';
+
   const buildParams = () => {
-    const t = today(); // already IST via the today() utility
+    const t = today();
     if (dateRange === 'today') return `&date_from=${t}&date_to=${t}`;
     if (dateRange === 'week') {
-      // Compute Monday of current week in IST
       const nowIST = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
-      const dayOfWeek = nowIST.getDay(); // 0=Sun
-      nowIST.setDate(nowIST.getDate() - ((dayOfWeek + 6) % 7)); // roll back to Monday
+      const dayOfWeek = nowIST.getDay();
+      nowIST.setDate(nowIST.getDate() - ((dayOfWeek + 6) % 7));
       const from = nowIST.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
       return `&date_from=${from}&date_to=${t}`;
     }
     if (dateRange === 'month') {
-      // First day of current month in IST
       const nowIST = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
       const from = `${nowIST.getFullYear()}-${String(nowIST.getMonth() + 1).padStart(2, '0')}-01`;
       return `&date_from=${from}&date_to=${t}`;
@@ -242,16 +468,6 @@ export default function App() {
     try {
       const data = await apiFetch(`/api/expenses/${currentUser.id}?grouped=true${buildParams()}`);
       setExpData(data);
-      if (data.used_categories) {
-        setCustomCats((prev: string[]) => {
-          const merged = [...prev];
-          data.used_categories.forEach((cat: string) => {
-            if (!PRESET_CATEGORIES.find(p => p.name === cat) && !merged.includes(cat)) merged.push(cat);
-          });
-          localStorage.setItem('sekra_custom_cats', JSON.stringify(merged));
-          return merged;
-        });
-      }
     } catch (e: unknown) { toast(e instanceof Error ? e.message : 'Failed to load', 'error'); }
     finally { setLoading(false); }
   };
@@ -353,6 +569,16 @@ export default function App() {
     } catch (e: unknown) { toast(e instanceof Error ? e.message : 'Delete failed', 'error'); }
   };
 
+  // ── Handler: add new category from the dropdown in the expense form ────────
+  const handleAddCategoryFromDropdown = async (name: string) => {
+    // Use 📦 as default emoji when adding from the expense form quick-add
+    await apiFetch('/api/categories', {
+      method: 'POST',
+      body: JSON.stringify({ name: name.trim(), emoji: '📦' }),
+    });
+    await loadCategories();
+  };
+
   // ── Export PDF ────────────────────────────────────────────────────────────
   const doExport = () => {
     if (!currentUser) return;
@@ -368,7 +594,6 @@ export default function App() {
     window.open(url, '_blank');
   };
 
-  // ── Export All Members PDF ────────────────────────────────────────────────
   const doExportAll = () => {
     let url = `/api/export/pdf/all?detailed=${exportDetailed}`;
     if (exportMode === 'month') {
@@ -407,10 +632,8 @@ export default function App() {
   // ─── Render ───────────────────────────────────────────────────────────────
   return (
     <>
-      {/* Offline banner */}
       {offline && <div className="offline-banner visible">📡 You&apos;re offline — showing cached data</div>}
 
-      {/* Install banner */}
       {showInstall && (
         <div className="install-banner">
           <div className="install-banner-icon">📱</div>
@@ -602,7 +825,15 @@ export default function App() {
                   </div>
                 ) : (
                   <div className="categories-list">
-                    {expData.groups.map(g => <CategoryCard key={g.category} group={g} onEdit={openEdit} onDelete={deleteExpense} />)}
+                    {expData.groups.map(g => (
+                      <CategoryCard
+                        key={g.category}
+                        group={g}
+                        getCategoryEmoji={getCategoryEmoji}
+                        onEdit={openEdit}
+                        onDelete={deleteExpense}
+                      />
+                    ))}
                   </div>
                 )}
               </div>
@@ -659,6 +890,20 @@ export default function App() {
                 <button className="btn btn-ghost" onClick={() => { setExportFrom(new Date(new Date().setDate(1)).toISOString().slice(0,10)); setExportTo(today()); setExportAllModal(true); }}>
                   👥 Export All Members
                 </button>
+
+                {/* ── Manage Categories ── */}
+                <button className="btn btn-ghost profile-cat-btn" onClick={() => setCatManageOpen(true)}>
+                  <span className="profile-cat-btn-left">
+                    <span className="profile-cat-emoji-strip">
+                      {categories.slice(0, 4).map(c => (
+                        <span key={c.id}>{c.emoji}</span>
+                      ))}
+                    </span>
+                    Manage Categories
+                  </span>
+                  <span className="profile-cat-count">{categories.length}</span>
+                </button>
+
                 <button className="btn btn-danger" style={{ width: '100%' }} onClick={logout}>Switch User</button>
               </div>
             </div>
@@ -705,14 +950,12 @@ export default function App() {
             </div>
             <div className="form-group">
               <label>Category</label>
-              <CategoryDropdown value={category} onChange={setCategory} customCats={customCats}
-                onAddCustom={v => {
-                  if (!customCats.includes(v)) {
-                    const next = [...customCats, v];
-                    setCustomCats(next);
-                    localStorage.setItem('sekra_custom_cats', JSON.stringify(next));
-                  }
-                }} />
+              <CategoryDropdown
+                value={category}
+                onChange={setCategory}
+                categories={categories}
+                onAddNew={handleAddCategoryFromDropdown}
+              />
             </div>
             <div className="form-group">
               <label>Description</label>
@@ -861,19 +1104,29 @@ export default function App() {
         </div>
       </div>
 
+      {/* ── MANAGE CATEGORIES MODAL ── */}
+      <ManageCategoriesModal
+        open={catManageOpen}
+        onClose={() => setCatManageOpen(false)}
+        categories={categories}
+        onRefresh={loadCategories}
+        toast={toast}
+      />
+
       <Toast toasts={toasts} dismiss={id => setToasts(t => t.filter(x => x.id !== id))} />
     </>
   );
 }
 
 // ─── Category Card Component ──────────────────────────────────────────────────
-function CategoryCard({ group, onEdit, onDelete }: {
+function CategoryCard({ group, getCategoryEmoji, onEdit, onDelete }: {
   group: ExpenseGroup;
+  getCategoryEmoji: (name: string) => string;
   onEdit: (e: Expense) => void;
   onDelete: (id: number) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const icon = group._is_income ? '💰' : getCategoryIcon(group.category);
+  const icon = getCategoryEmoji(group.category);
 
   return (
     <div className={`category-card${group._is_income ? ' income-card' : ''}${expanded ? ' expanded' : ''}`}>
