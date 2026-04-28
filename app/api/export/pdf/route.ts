@@ -8,11 +8,12 @@ interface Expense {
   category: string;
   description: string;
   date: string;
+  payment_mode?: string;
 }
 
 export async function GET(req: Request) {
   try {
-    const url = new URL(req.url);
+    const url      = new URL(req.url);
     const userId   = url.searchParams.get('user_id') || '';
     const mode     = url.searchParams.get('mode') || 'month';
     const detailed = url.searchParams.get('detailed') === 'true';
@@ -59,7 +60,17 @@ export async function GET(req: Request) {
     const totalExpense = Math.round(rows.filter(e => e.type === 'expense').reduce((s, e) => s + e.amount, 0) * 100) / 100;
     const balance      = Math.round((totalIncome - totalExpense) * 100) / 100;
 
-    // Group by category
+    // ── Cash / Online splits ──────────────────────────────────────────────────
+    const cashRows   = rows.filter(e => (e.payment_mode || 'cash') === 'cash');
+    const onlineRows = rows.filter(e => (e.payment_mode || 'cash') === 'online');
+    const cashIncome   = Math.round(cashRows.filter(e => e.type === 'income').reduce((s, e) => s + e.amount, 0) * 100) / 100;
+    const cashExpense  = Math.round(cashRows.filter(e => e.type === 'expense').reduce((s, e) => s + e.amount, 0) * 100) / 100;
+    const cashBalance  = Math.round((cashIncome - cashExpense) * 100) / 100;
+    const onlineIncome  = Math.round(onlineRows.filter(e => e.type === 'income').reduce((s, e) => s + e.amount, 0) * 100) / 100;
+    const onlineExpense = Math.round(onlineRows.filter(e => e.type === 'expense').reduce((s, e) => s + e.amount, 0) * 100) / 100;
+    const onlineBalance = Math.round((onlineIncome - onlineExpense) * 100) / 100;
+
+    // ── Group by category ─────────────────────────────────────────────────────
     const groups: Record<string, { net: number; expenses: Expense[]; is_income: boolean }> = {};
     for (const e of rows) {
       const cat = e.category || 'Uncategorized';
@@ -87,10 +98,19 @@ export async function GET(req: Request) {
       day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
     });
 
+    const payBadge = (e: Expense) => {
+      const mode = e.payment_mode || 'cash';
+      return `<span class="pay-badge ${mode}">${mode === 'online' ? '⚡ Online' : '💵 Cash'}</span>`;
+    };
+
     const categoriesHtml = sortedGroups.map(([catName, g]) => {
       const itemsHtml = detailed ? g.expenses.map(e => `
         <tr class="item-row">
-          <td class="item-desc">${e.description || '—'}<span class="item-date">${fmtDate(e.date)}</span></td>
+          <td class="item-desc">
+            ${e.description || '—'}
+            <span class="item-date">${fmtDate(e.date)}</span>
+            ${payBadge(e)}
+          </td>
           <td class="item-amt ${e.type}">${e.type === 'income' ? '+' : '−'}${money(e.amount)}</td>
         </tr>
       `).join('') : '';
@@ -127,7 +147,9 @@ export async function GET(req: Request) {
   .user-name { font-size: 16px; font-weight: 600; color: #111; margin-top: 2px; }
   hr { border: none; border-top: 1.5px solid #e8c547; margin: 14px 0; }
   hr.soft { border-color: #ddd; border-width: 0.5px; margin: 10px 0; }
-  .summary-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 20px; }
+
+  /* Summary cards */
+  .summary-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 12px; }
   .summary-card { background: #f2f2f2; border-radius: 8px; padding: 12px 14px; text-align: center; }
   .card-label { font-size: 9px; color: #7a7880; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 4px; }
   .card-value { font-weight: 700; font-size: 15px; }
@@ -135,16 +157,29 @@ export async function GET(req: Request) {
   .card-value.expense { color: #e05c5c; }
   .card-value.balance-pos { color: #2a9d5c; }
   .card-value.balance-neg { color: #e05c5c; }
+
+  /* Cash / Online split row */
+  .pay-split { display: flex; gap: 8px; margin-bottom: 20px; }
+  .pay-split-card {
+    flex: 1; background: #fafafa; border: 1px solid #e8e8e8;
+    border-radius: 8px; padding: 9px 12px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .pay-split-label { font-size: 10px; color: #7a7880; display: flex; align-items: center; gap: 4px; }
+  .pay-split-label .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+  .pay-split-label .dot.cash   { background: #7a7880; }
+  .pay-split-label .dot.online { background: #4a90d9; }
+  .pay-split-val { font-size: 12px; font-weight: 600; color: #111; }
+
   .section-label { font-size: 9px; font-weight: 600; color: #7a7880; text-transform: uppercase; letter-spacing: 1.2px; margin-bottom: 8px; }
   .cat-block { margin-bottom: 8px; }
   .cat-table { width: 100%; border-collapse: collapse; background: #f5f5f5; border-radius: 8px; overflow: hidden; }
-  .cat-header { padding: 0; }
   .cat-header td { padding: 10px 12px; font-weight: 600; font-size: 13px; }
-  .cat-header.income-cat { border-left: 3px solid #e8c547; }
+  .cat-header.income-cat  { border-left: 3px solid #e8c547; }
   .cat-header.expense-cat { border-left: 3px solid #e05c5c; }
   .cat-name { color: #111; }
   .cat-net { text-align: right; }
-  .income-cat .cat-net  { color: #2a9d5c; }
+  .income-cat  .cat-net { color: #2a9d5c; }
   .expense-cat .cat-net { color: #e05c5c; }
   .item-row td { padding: 6px 12px 6px 24px; border-top: 0.5px solid #e0e0e0; font-size: 12px; }
   .item-desc { color: #333; }
@@ -153,6 +188,17 @@ export async function GET(req: Request) {
   .item-amt.income  { color: #2a9d5c; }
   .item-amt.expense { color: #e05c5c; }
   .cat-count { font-size: 10px; color: #7a7880; padding: 3px 12px; }
+
+  /* Payment mode badge in detailed rows */
+  .pay-badge {
+    display: inline-block; margin-left: 6px;
+    font-size: 9px; font-weight: 500;
+    border-radius: 3px; padding: 1px 5px;
+    vertical-align: middle;
+  }
+  .pay-badge.cash   { background: #f0f0f0; color: #7a7880; }
+  .pay-badge.online { background: #e8f0fb; color: #4a90d9; }
+
   .footer { margin-top: 24px; padding-top: 10px; border-top: 0.5px solid #ddd; font-size: 10px; color: #aaa; text-align: center; }
   @media print {
     body { font-size: 12px; }
@@ -172,6 +218,8 @@ export async function GET(req: Request) {
     <div class="meta">Exported on<br>${exportedOn}</div>
   </div>
   <hr>
+
+  <!-- Main summary cards -->
   <div class="summary-grid">
     <div class="summary-card">
       <div class="card-label">Income</div>
@@ -186,6 +234,19 @@ export async function GET(req: Request) {
       <div class="card-value ${balance >= 0 ? 'balance-pos' : 'balance-neg'}">${balance < 0 ? '−' : ''}${money(balance)}</div>
     </div>
   </div>
+
+  <!-- Cash / Online split -->
+  <div class="pay-split">
+    <div class="pay-split-card">
+      <div class="pay-split-label"><span class="dot cash"></span> Cash balance</div>
+      <div class="pay-split-val" style="color:${cashBalance >= 0 ? '#2a9d5c' : '#e05c5c'}">${cashBalance < 0 ? '−' : ''}${money(cashBalance)}</div>
+    </div>
+    <div class="pay-split-card">
+      <div class="pay-split-label"><span class="dot online"></span> Online balance</div>
+      <div class="pay-split-val" style="color:${onlineBalance >= 0 ? '#2a9d5c' : '#e05c5c'}">${onlineBalance < 0 ? '−' : ''}${money(onlineBalance)}</div>
+    </div>
+  </div>
+
   <div class="section-label">Transactions by category</div>
   <hr class="soft">
   ${rows.length === 0

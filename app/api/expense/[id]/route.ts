@@ -20,9 +20,10 @@ export async function PUT(
       return NextResponse.json({ error: 'Invalid type' }, { status: 400 });
     updates.type = data.type;
   }
-  if ('category' in data)    updates.category    = (data.category || 'Uncategorized').trim();
-  if ('description' in data) updates.description = (data.description || '').trim();
-  if ('date' in data)        updates.date        = data.date;
+  if ('category' in data)     updates.category     = (data.category || 'Uncategorized').trim();
+  if ('description' in data)  updates.description  = (data.description || '').trim();
+  if ('date' in data)         updates.date         = data.date;
+  if ('payment_mode' in data) updates.payment_mode = (data.payment_mode === 'online') ? 'online' : 'cash';
 
   if (!Object.keys(updates).length)
     return NextResponse.json({ error: 'Nothing to update' }, { status: 400 });

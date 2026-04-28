@@ -5,9 +5,15 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 // ─── Types ─────────────────────────────────────────────────────────────────────
 interface User { id: number; name: string; }
 interface Category { id: string; name: string; emoji: string; }
-interface Expense { id: number; amount: number; type: 'expense' | 'income'; category: string; description: string; date: string; }
+interface Expense { id: number; amount: number; type: 'expense' | 'income'; category: string; description: string; date: string; payment_mode?: 'cash' | 'online'; }
 interface ExpenseGroup { category: string; net: number; total: number; _is_income: boolean; expenses: Expense[]; }
-interface ExpensesData { groups: ExpenseGroup[]; total_income: number; total_expense: number; balance: number; used_categories: string[]; }
+interface ExpensesData {
+  groups: ExpenseGroup[];
+  total_income: number; total_expense: number; balance: number;
+  cash_balance: number; cash_income: number; cash_expense: number;
+  online_balance: number; online_income: number; online_expense: number;
+  used_categories: string[];
+}
 interface ToastItem { id: number; msg: string; type: 'success' | 'error'; }
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
@@ -366,6 +372,7 @@ export default function App() {
   const [expDate, setExpDate]   = useState(today());
   const [entryType, setEntryType] = useState<'expense' | 'income'>('expense');
   const [category, setCategory] = useState('');
+  const [paymentMode, setPaymentMode] = useState<'cash' | 'online'>('cash');
 
   // ── Categories from DB ────────────────────────────────────────────────────
   const [categories, setCategories] = useState<Category[]>([]);
@@ -536,12 +543,13 @@ export default function App() {
   // ── Expense CRUD ──────────────────────────────────────────────────────────
   const openAdd = () => {
     setEditId(null); setAmount(''); setDesc(''); setExpDate(today());
-    setEntryType('expense'); setCategory(''); setExpModal(true);
+    setEntryType('expense'); setCategory(''); setPaymentMode('cash'); setExpModal(true);
   };
 
   const openEdit = (exp: Expense) => {
     setEditId(exp.id); setAmount(String(exp.amount)); setDesc(exp.description || '');
     setExpDate(exp.date); setEntryType(exp.type || 'expense'); setCategory(exp.category || '');
+    setPaymentMode(exp.payment_mode || 'cash');
     setExpModal(true);
   };
 
@@ -551,10 +559,10 @@ export default function App() {
     const cat = category || 'Uncategorized';
     try {
       if (editId) {
-        await apiFetch(`/api/expense/${editId}`, { method: 'PUT', body: JSON.stringify({ amount: amt, type: entryType, category: cat, description: desc, date: expDate }) });
+        await apiFetch(`/api/expense/${editId}`, { method: 'PUT', body: JSON.stringify({ amount: amt, type: entryType, category: cat, description: desc, date: expDate, payment_mode: paymentMode }) });
         toast('Entry updated ✓');
       } else {
-        await apiFetch('/api/expenses', { method: 'POST', body: JSON.stringify({ user_id: currentUser!.id, amount: amt, type: entryType, category: cat, description: desc, date: expDate }) });
+        await apiFetch('/api/expenses', { method: 'POST', body: JSON.stringify({ user_id: currentUser!.id, amount: amt, type: entryType, category: cat, description: desc, date: expDate, payment_mode: paymentMode }) });
         toast('Entry added ✓');
       }
       setExpModal(false); loadExpenses(); loadChart();
@@ -750,6 +758,24 @@ export default function App() {
                   <div className="balance-sub">
                     <div className="balance-sub-icon expense-icon">↓</div>
                     <div><div className="balance-sub-label">Spent</div><div className="balance-sub-val">₹{fmt(expense)}</div></div>
+                  </div>
+                </div>
+                {/* Cash / Online split */}
+                <div className="pay-split-row">
+                  <div className="pay-split-item">
+                    <span className="pay-split-dot cash-dot" />
+                    <span className="pay-split-label">Cash</span>
+                    <span className={`pay-split-val${(allTimeData?.cash_balance ?? 0) < 0 ? ' neg' : ''}`}>
+                      {(allTimeData?.cash_balance ?? 0) < 0 ? '-' : ''}₹{fmt(Math.abs(allTimeData?.cash_balance ?? 0))}
+                    </span>
+                  </div>
+                  <div className="pay-split-sep" />
+                  <div className="pay-split-item">
+                    <span className="pay-split-dot online-dot" />
+                    <span className="pay-split-label">Online</span>
+                    <span className={`pay-split-val${(allTimeData?.online_balance ?? 0) < 0 ? ' neg' : ''}`}>
+                      {(allTimeData?.online_balance ?? 0) < 0 ? '-' : ''}₹{fmt(Math.abs(allTimeData?.online_balance ?? 0))}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -965,6 +991,21 @@ export default function App() {
               <label>Date</label>
               <input type="date" className="form-control" value={expDate} onChange={e => setExpDate(e.target.value)} />
             </div>
+            <div className="form-group">
+              <label>Payment Mode</label>
+              <div className="pay-mode-toggle">
+                <button
+                  className={`pay-mode-btn${paymentMode === 'cash' ? ' active cash' : ''}`}
+                  onClick={() => setPaymentMode('cash')}>
+                  💵 Cash
+                </button>
+                <button
+                  className={`pay-mode-btn${paymentMode === 'online' ? ' active online' : ''}`}
+                  onClick={() => setPaymentMode('online')}>
+                  ⚡ Online
+                </button>
+              </div>
+            </div>
             <button className="btn btn-primary" style={{ marginTop: 8 }} onClick={saveExpense}>
               {editId ? 'Update Entry' : 'Save Entry'}
             </button>
@@ -1148,7 +1189,12 @@ function CategoryCard({ group, getCategoryEmoji, onEdit, onDelete }: {
               <div className="expense-dot" />
               <div className="expense-info">
                 <div className="expense-desc">{exp.description || '—'}</div>
-                <div className="expense-date">{formatDate(exp.date)}</div>
+                <div className="expense-date">
+                  {formatDate(exp.date)}
+                  <span className={`expense-pay-badge ${exp.payment_mode || 'cash'}`}>
+                    {(exp.payment_mode || 'cash') === 'online' ? '⚡ Online' : '💵 Cash'}
+                  </span>
+                </div>
               </div>
               <div className={`expense-amount ${exp.type}`}>
                 {exp.type === 'income' ? '+' : '-'}₹{fmt(exp.amount)}

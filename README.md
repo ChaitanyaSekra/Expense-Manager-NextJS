@@ -1,28 +1,147 @@
 # 🪙 Sekra Budget Tracker — Next.js
 
-A minimal, mobile-first Progressive Web App for tracking personal expenses. Migrated from Flask + vanilla JS to **Next.js 15** with the App Router.
+A minimal, mobile-first Progressive Web App for tracking shared expenses across up to 5 users. Built with **Next.js 15** (App Router), **React 19**, **TypeScript**, **Firebase Firestore**, and deployed on **Vercel**.
 
 ---
 
-## ✨ What's new vs the Flask version
+## ✨ Features
 
-| | Flask original | Next.js version |
+- Multi-user login with optional 4-digit PIN
+- Add / edit / delete expenses and income entries
+- **Cash vs Online payment mode** per transaction — with balance split on the home card
+- DB-driven categories with emoji, searchable dropdown, quick-add from form
+- Manage categories (add / edit / delete) from the profile screen
+- Category accordion grouping with net income/expense logic
+- Balance, Income, Spent display (always all-time, independent of date filter)
+- Range summary line for filtered period (earned / spent)
+- 7-day mini bar chart
+- Date filtering: All / Today / This Week / This Month / Custom range (defaults to Today)
+- PDF export — single user (📄) and all members pooled (👥), with optional detailed view
+  - Detailed view shows per-transaction payment mode badges (💵 Cash / ⚡ Online)
+  - Summary includes cash balance and online balance split
+- PWA installable (manifest + service worker with deploy-based cache busting)
+- Dark theme, mobile-first
+
+---
+
+## 🗂️ File Structure
+
+```
+sekra/
+├── app/
+│   ├── layout.tsx
+│   ├── globals.css
+│   ├── page.tsx                               # Full client-side app (single React component)
+│   └── api/
+│       ├── users/route.ts                     # GET list users, POST create user
+│       ├── users/login/route.ts               # POST login with optional PIN
+│       ├── categories/route.ts                # GET all categories, POST new category
+│       ├── categories/[id]/route.ts           # PUT edit category, DELETE (guarded)
+│       ├── expenses/route.ts                  # POST add expense (includes payment_mode)
+│       ├── expenses/[userId]/route.ts         # GET grouped expenses + cash/online splits
+│       ├── expenses/[userId]/summary/route.ts # GET 7-day chart data
+│       ├── expense/[id]/route.ts              # PUT edit (includes payment_mode), DELETE
+│       └── export/pdf/
+│           ├── route.ts                       # Single-user printable HTML report
+│           └── all/route.ts                   # All-members printable HTML report
+├── lib/
+│   └── firebase.ts
+├── public/
+│   ├── manifest.json
+│   ├── sw.js                                  # Deploy-version-aware service worker
+│   └── icons/
+├── next.config.mjs                            # Injects deploy SHA into sw.js at build time
+├── package.json
+└── tsconfig.json
+```
+
+---
+
+## 🔌 API Routes
+
+| Method | Path | Description |
 |---|---|---|
-| Backend | Python Flask | Next.js API Routes (TypeScript) |
-| Database | SQLite via Python | SQLite via Node.js v22 built-in `node:sqlite` |
-| Frontend | Vanilla JS | React 18 (client components) |
-| PDF Export | ReportLab (Python) | Print-optimised HTML → browser print-to-PDF |
-| Styling | Same dark theme CSS | Identical CSS, imported as global styles |
+| GET | `/api/users` | List all users |
+| POST | `/api/users` | Create user `{ name, pin? }` |
+| POST | `/api/users/login` | Login `{ name, pin? }` |
+| GET | `/api/categories` | List all categories (seeds defaults if empty) |
+| POST | `/api/categories` | Add category `{ name, emoji }` |
+| PUT | `/api/categories/[id]` | Edit category name/emoji; cascades name change to all expenses |
+| DELETE | `/api/categories/[id]` | Delete category — blocked if any expenses use it |
+| GET | `/api/expenses/[userId]` | Grouped expenses + cash/online balance splits; supports `?date_from=&date_to=` |
+| GET | `/api/expenses/[userId]/summary` | 7-day daily totals for chart |
+| POST | `/api/expenses` | Add expense `{ ..., payment_mode: 'cash' \| 'online' }` |
+| PUT | `/api/expense/[id]` | Edit expense (payment_mode optional) |
+| DELETE | `/api/expense/[id]` | Delete expense |
+| GET | `/api/export/pdf` | Printable HTML report (single user) |
+| GET | `/api/export/pdf/all` | Printable HTML report (all members pooled) |
 
-All features are preserved: multi-user login, PIN protection, category accordion, income/expense tracking, date filters, 7-day mini chart, and PDF export.
+---
+
+## 🗄️ Firestore Data Model
+
+```
+users/{userId}
+  name: string
+  pin: string | null
+  createdAt: string
+
+categories/{categoryId}
+  name: string
+  emoji: string
+  createdAt: string
+
+expenses/{expenseId}
+  userId: string
+  amount: number
+  type: "expense" | "income"
+  category: string          ← category name (string), not ID
+  description: string
+  date: string (YYYY-MM-DD)
+  payment_mode: "cash" | "online"   ← NEW; missing on old records defaults to "cash"
+  createdAt: string
+```
+
+---
+
+## 💳 Payment Mode
+
+Each transaction is tagged as **Cash** or **Online** at entry time (Cash is the default). Old records without a `payment_mode` field are treated as Cash everywhere.
+
+This affects:
+- **Balance card** — a small split row under Income/Spent shows `Cash ₹X` and `Online ₹X` balances
+- **Transaction list** — each item shows a small badge (`💵 Cash` / `⚡ Online`) next to the date
+- **PDF export** — detailed view shows a badge per transaction row; summary section shows cash and online balance splits
+
+---
+
+## 🌏 IST Date Handling
+
+Applied consistently everywhere (page.tsx, export routes):
+
+```ts
+const todayIST = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+const nowIST   = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+```
+
+---
+
+## 🔥 Firestore Composite Indexes Required
+
+| Collection | Fields |
+|---|---|
+| `expenses` | `userId` ASC, `date` ASC |
+| `expenses` | `userId` ASC, `type` ASC, `date` ASC |
+
+(`categories` only uses `createdAt` ASC — auto-created by Firestore)
 
 ---
 
 ## 🚀 Local Setup
 
 ### Requirements
-- **Node.js v22+** (uses built-in `node:sqlite`, no extra packages needed)
-- No Python required
+- **Node.js 18+**
+- Firebase project with Firestore enabled
 
 ### 1. Install dependencies
 
@@ -30,7 +149,17 @@ All features are preserved: multi-user login, PIN protection, category accordion
 npm install
 ```
 
-### 2. Run dev server
+### 2. Add environment variables
+
+Create `.env.local`:
+
+```
+FIREBASE_PROJECT_ID=your-project-id
+FIREBASE_CLIENT_EMAIL=your-service-account@...
+FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n..."
+```
+
+### 3. Run dev server
 
 ```bash
 npm run dev
@@ -38,102 +167,32 @@ npm run dev
 
 App runs at **http://localhost:3000**
 
-### 3. Build for production
-
-```bash
-npm run build
-npm start
-```
-
 ---
 
-## ☁️ Deploy to Render
+## ☁️ Deploy to Vercel
 
-1. Push to GitHub.
-2. Create a new **Web Service** on [render.com](https://render.com).
-3. Set:
-   - **Build Command:** `npm install && npm run build`
-   - **Start Command:** `npm start`
-4. Add environment variable: `DB_PATH=/data/budget.db`
-5. Add a **Disk** mounted at `/data` (1 GB).
+1. Push to GitHub
+2. Import the repo on [vercel.com](https://vercel.com)
+3. Add the 3 Firebase environment variables in Vercel's project settings
+4. Deploy — Next.js is auto-detected, no extra config needed
 
----
-
-## 📁 File Structure
-
-```
-sekra/
-├── app/
-│   ├── layout.tsx              # Root layout
-│   ├── globals.css             # Dark theme styles (identical to original)
-│   ├── page.tsx                # Full client-side app (React)
-│   └── api/
-│       ├── users/route.ts          # GET/POST users
-│       ├── users/login/route.ts    # POST login
-│       ├── expenses/route.ts       # POST add expense
-│       ├── expenses/[userId]/route.ts       # GET expenses (grouped)
-│       ├── expenses/[userId]/summary/route.ts  # GET 7-day chart data
-│       ├── expense/[id]/route.ts   # PUT/DELETE single expense
-│       └── export/pdf/route.ts     # GET printable HTML report
-├── lib/
-│   └── db.ts                   # SQLite singleton (node:sqlite)
-├── public/
-│   ├── manifest.json
-│   ├── sw.js
-│   └── icons/
-│       └── icon.svg
-├── generate_icons.mjs          # SVG icon generator
-├── next.config.mjs
-├── tsconfig.json
-└── package.json
-```
-
----
-
-## 🔌 API Endpoints (unchanged from Flask)
-
-| Method | Path | Description |
-|---|---|---|
-| GET  | `/api/users` | List all users |
-| POST | `/api/users` | Create user |
-| POST | `/api/users/login` | Login with optional PIN |
-| GET  | `/api/expenses/:userId` | Get grouped expenses |
-| GET  | `/api/expenses/:userId/summary` | 7-day chart data |
-| POST | `/api/expenses` | Add expense |
-| PUT  | `/api/expense/:id` | Edit expense |
-| DELETE | `/api/expense/:id` | Delete expense |
-| GET  | `/api/export/pdf` | Printable HTML report |
+The service worker uses the Vercel git commit SHA for cache busting (`sekra-{sha}`). On each new deploy all old `sekra-*` caches are automatically cleared. Falls back to a `Date.now()` base-36 string when running locally.
 
 ---
 
 ## 📄 PDF Export
 
-The Flask version used **ReportLab** (Python) to generate PDFs server-side.
+Generates a print-optimised HTML page that opens in a new tab and auto-triggers the browser print dialog. Select **Save as PDF** in the print dialog.
 
-The Next.js version generates a **print-optimised HTML page** that opens in a new tab and auto-triggers the browser's print dialog. Select "Save as PDF" in the print dialog for a clean, styled PDF. This approach works on all devices including mobile.
-
----
-
-## 🗄️ Database Reset
-
-```bash
-# Using SQLite CLI
-sqlite3 budget.db "DELETE FROM expenses; DELETE FROM users; DELETE FROM sqlite_sequence;"
-
-# Also clear browser localStorage:
-# localStorage.removeItem('sekra_custom_cats')
-# localStorage.removeItem('sekra_user')
-```
+Both single-user and all-members reports include:
+- Summary cards (Income / Expenses / Balance)
+- Cash balance and Online balance split
+- Category breakdown
+- Detailed view (optional): individual rows with date, payment mode badge, and (for all-members) user name pill
 
 ---
 
 ## 📱 PWA Installation
 
-Same as before — the `manifest.json` and `sw.js` are served from `/public`.
-
 **Android (Chrome):** Menu → Add to Home Screen  
 **iOS (Safari):** Share → Add to Home Screen
-
-For proper app icons, generate PNG files from `public/icons/icon.svg` and place them at:
-- `public/icons/icon-192.png`
-- `public/icons/icon-512.png`

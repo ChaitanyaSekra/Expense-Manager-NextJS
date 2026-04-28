@@ -4,7 +4,8 @@ import { db } from '@/lib/firebase';
 export async function POST(req: Request) {
   const data = await req.json();
   const { user_id, type: entry_type = 'expense', description = '', date } = data;
-  const category = (data.category || 'Uncategorized').trim();
+  const category     = (data.category     || 'Uncategorized').trim();
+  const payment_mode = (data.payment_mode === 'online') ? 'online' : 'cash'; // default: cash
   const today = new Date().toISOString().slice(0, 10);
 
   if (!user_id || !data.amount)
@@ -23,11 +24,12 @@ export async function POST(req: Request) {
     category,
     description: description.trim(),
     date: date || today,
+    payment_mode,
     createdAt: new Date().toISOString(),
   });
 
   return NextResponse.json({
     id: ref.id, user_id, amount, type: entry_type,
-    category, description, date: date || today,
+    category, description, date: date || today, payment_mode,
   }, { status: 201 });
 }

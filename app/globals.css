@@ -791,3 +791,86 @@ select.form-control option { background: var(--bg-card); }
   margin-top: 4px;
 }
 .cat-manage-add-btn:hover { background: rgba(232,197,71,0.14); border-color: var(--accent); }
+
+/* ── Balance card: Cash / Online split row ── */
+.pay-split-row {
+  display: flex;
+  align-items: center;
+  border-top: 1px solid var(--border-soft);
+  margin-top: 0;
+  padding: 8px 14px;
+}
+.pay-split-item {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pay-split-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--border-soft);
+  flex-shrink: 0;
+  margin: 0 10px;
+}
+.pay-split-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.pay-split-dot.cash-dot   { background: var(--text-sub); }
+.pay-split-dot.online-dot { background: #4a90d9; }
+.pay-split-label {
+  font-size: 0.68rem;
+  color: var(--text-sub);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.pay-split-val {
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--text);
+  margin-left: auto;
+}
+.pay-split-val.neg { color: var(--danger); }
+
+/* ── Expense item: payment mode badge ── */
+.expense-pay-badge {
+  display: inline-block;
+  margin-left: 6px;
+  font-size: 0.65rem;
+  font-weight: 500;
+  border-radius: 3px;
+  padding: 0 4px;
+  vertical-align: middle;
+  line-height: 1.6;
+}
+.expense-pay-badge.cash   { background: var(--bg-hover); color: var(--text-sub); }
+.expense-pay-badge.online { background: rgba(74,144,217,0.12); color: #4a90d9; }
+
+/* ── Expense modal: Payment mode toggle ── */
+.pay-mode-toggle {
+  display: flex;
+  gap: 8px;
+  background: var(--bg-input);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px;
+}
+.pay-mode-btn {
+  flex: 1;
+  padding: 9px;
+  border: none;
+  border-radius: 6px;
+  font-family: var(--font-sans);
+  font-size: 0.88rem;
+  font-weight: 500;
+  cursor: pointer;
+  background: transparent;
+  color: var(--text-muted);
+  transition: var(--transition);
+}
+.pay-mode-btn:hover { background: var(--bg-hover); color: var(--text); }
+.pay-mode-btn.active.cash   { background: rgba(122,120,128,0.15); color: var(--text); }
+.pay-mode-btn.active.online { background: rgba(74,144,217,0.12);  color: #4a90d9; }
