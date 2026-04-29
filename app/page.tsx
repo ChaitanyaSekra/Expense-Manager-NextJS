@@ -1177,7 +1177,7 @@ function CategoryCard({ group, getCategoryEmoji, onEdit, onDelete }: {
           <div className="cat-name">{group.category}</div>
           <div className="cat-count">{group.expenses.length} item{group.expenses.length !== 1 ? 's' : ''}</div>
         </div>
-        <div className="cat-total">{group._is_income ? '+' : '-'}₹{fmt(group.total)}</div>
+        <div className="cat-total">{group.net >= 0 ? '+' : '-'}₹{fmt(Math.abs(group.net))}</div>
         <svg className="cat-chevron" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7"/>
         </svg>
