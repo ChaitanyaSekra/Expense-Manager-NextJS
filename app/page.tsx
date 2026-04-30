@@ -3,33 +3,80 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
-interface User { id: number; name: string; }
+interface User { id: string; name: string; }
 interface Category { id: string; name: string; emoji: string; }
-interface Expense { id: number; amount: number; type: 'expense' | 'income'; category: string; description: string; date: string; payment_mode?: 'cash' | 'online'; }
+interface Expense { id: string; amount: number; type: 'expense' | 'income'; category: string; description: string; date: string; payment_mode?: 'cash' | 'online'; }
 interface ExpenseGroup { category: string; net: number; total: number; _is_income: boolean; expenses: Expense[]; }
 interface ExpensesData {
   groups: ExpenseGroup[];
+  total_income?: number; total_expense?: number; balance?: number;
+  cash_balance?: number; cash_income?: number; cash_expense?: number;
+  online_balance?: number; online_income?: number; online_expense?: number;
+  used_categories?: string[];
+  hasMore?: boolean;
+  nextCursor?: string | null;
+}
+interface AllTimeTotals {
   total_income: number; total_expense: number; balance: number;
-  cash_balance: number; cash_income: number; cash_expense: number;
-  online_balance: number; online_income: number; online_expense: number;
-  used_categories: string[];
+  cash_income: number; cash_expense: number; cash_balance: number;
+  online_income: number; online_expense: number; online_balance: number;
 }
 interface ToastItem { id: number; msg: string; type: 'success' | 'error'; }
 
+// ─── Constants ────────────────────────────────────────────────────────────────
+const ALL_TIME_CACHE_KEY = 'sekra_alltime_';  // + userId suffix
+const ALL_TIME_CACHE_TTL = 5 * 60 * 1000;     // 5 minutes
+const CAT_CACHE_KEY      = 'sekra_categories';
+const CAT_CACHE_TTL      = 10 * 60 * 1000;    // 10 minutes
+
 // ─── Utilities ────────────────────────────────────────────────────────────────
-const initials = (name: string) => name.trim().split(/\s+/).map((w: string) => w[0]).join('').toUpperCase().slice(0, 2);
-const fmt = (n: number) => Number(n).toLocaleString('en-IN', { maximumFractionDigits: 2 });
-const today = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-};
-const formatDate = (d: string) => new Date(d + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+const initials  = (name: string) => name.trim().split(/\s+/).map((w: string) => w[0]).join('').toUpperCase().slice(0, 2);
+const fmt       = (n: number)    => Number(n).toLocaleString('en-IN', { maximumFractionDigits: 2 });
+const todayStr  = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+const formatDate = (d: string)   => new Date(d + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
 
 async function apiFetch(path: string, options: RequestInit = {}) {
-  const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
+  const res  = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || 'Request failed');
   return data;
+}
+
+// ─── localStorage helpers ─────────────────────────────────────────────────────
+function lsGet<T>(key: string, ttl: number): T | null {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const { ts, value } = JSON.parse(raw);
+    if (Date.now() - ts > ttl) { localStorage.removeItem(key); return null; }
+    return value as T;
+  } catch { return null; }
+}
+function lsSet(key: string, value: unknown) {
+  try { localStorage.setItem(key, JSON.stringify({ ts: Date.now(), value })); } catch {}
+}
+function lsDel(key: string) {
+  try { localStorage.removeItem(key); } catch {}
+}
+
+// ─── Merge groups helper (for pagination append) ──────────────────────────────
+function mergeGroups(existing: ExpensesData | null, incoming: ExpensesData): ExpensesData {
+  if (!existing) return incoming;
+  const merged = { ...existing, hasMore: incoming.hasMore, nextCursor: incoming.nextCursor };
+  const groupMap = new Map(existing.groups.map(g => [g.category, { ...g, expenses: [...g.expenses] }]));
+  for (const g of incoming.groups) {
+    if (groupMap.has(g.category)) {
+      const ex = groupMap.get(g.category)!;
+      ex.expenses = [...ex.expenses, ...g.expenses];
+      ex.net   = Math.round((ex.net   + g.net)   * 100) / 100;
+      ex.total = Math.round((ex.total + g.total)  * 100) / 100;
+      ex._is_income = ex.net >= 0;
+    } else {
+      groupMap.set(g.category, { ...g });
+    }
+  }
+  merged.groups = [...groupMap.values()];
+  return merged;
 }
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
@@ -59,14 +106,12 @@ function PinKeypad({ onKey }: { onKey: (k: string) => void }) {
 // ─── Category Dropdown ────────────────────────────────────────────────────────
 function CategoryDropdown({ value, onChange, categories, onAddNew }:
   { value: string; onChange: (v: string) => void; categories: Category[]; onAddNew: (name: string) => Promise<void> }) {
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState('');
+  const [open, setOpen]     = useState(false);
+  const [query, setQuery]   = useState('');
   const [adding, setAdding] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
 
-  const filtered = query
-    ? categories.filter(c => c.name.toLowerCase().includes(query.toLowerCase()))
-    : categories;
+  const filtered   = query ? categories.filter(c => c.name.toLowerCase().includes(query.toLowerCase())) : categories;
   const exactMatch = categories.some(c => c.name.toLowerCase() === query.toLowerCase());
   const selectedCat = categories.find(c => c.name === value);
 
@@ -81,14 +126,8 @@ function CategoryDropdown({ value, onChange, categories, onAddNew }:
   const handleAddNew = async () => {
     if (!query.trim() || exactMatch || adding) return;
     setAdding(true);
-    try {
-      await onAddNew(query.trim());
-      onChange(query.trim());
-      setOpen(false);
-      setQuery('');
-    } finally {
-      setAdding(false);
-    }
+    try { await onAddNew(query.trim()); onChange(query.trim()); setOpen(false); setQuery(''); }
+    finally { setAdding(false); }
   };
 
   return (
@@ -130,60 +169,33 @@ function CategoryDropdown({ value, onChange, categories, onAddNew }:
 
 // ─── Manage Categories Modal ──────────────────────────────────────────────────
 function ManageCategoriesModal({ open, onClose, categories, onRefresh, toast }:
-  {
-    open: boolean;
-    onClose: () => void;
-    categories: Category[];
-    onRefresh: () => void;
-    toast: (msg: string, type?: 'success' | 'error') => void;
-  }) {
+  { open: boolean; onClose: () => void; categories: Category[]; onRefresh: () => void; toast: (msg: string, type?: 'success' | 'error') => void; }) {
   const COMMON_EMOJIS = ['📦','🏷️','🏠','💊','✈️','🎓','🐾','💪','🎮','📱','🧴','🔧','💰','🎁','🍺','☕','🌿','🚗'];
-
-  const [editId, setEditId] = useState<string | null>(null);
+  const [editId, setEditId]   = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [editEmoji, setEditEmoji] = useState('');
   const [newName, setNewName] = useState('');
   const [newEmoji, setNewEmoji] = useState('📦');
-  const [saving, setSaving] = useState(false);
+  const [saving, setSaving]   = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [showNewForm, setShowNewForm] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState<'new' | 'edit' | null>(null);
 
-  // Reset when modal closes
   useEffect(() => {
-    if (!open) {
-      setEditId(null); setShowNewForm(false);
-      setNewName(''); setNewEmoji('📦');
-      setShowEmojiPicker(null);
-    }
+    if (!open) { setEditId(null); setShowNewForm(false); setNewName(''); setNewEmoji('📦'); setShowEmojiPicker(null); }
   }, [open]);
 
-  const startEdit = (cat: Category) => {
-    setEditId(cat.id);
-    setEditName(cat.name);
-    setEditEmoji(cat.emoji);
-    setShowEmojiPicker(null);
-    setShowNewForm(false);
-  };
-
+  const startEdit  = (cat: Category) => { setEditId(cat.id); setEditName(cat.name); setEditEmoji(cat.emoji); setShowEmojiPicker(null); setShowNewForm(false); };
   const cancelEdit = () => { setEditId(null); setShowEmojiPicker(null); };
 
   const saveEdit = async () => {
     if (!editId || !editName.trim() || !editEmoji.trim()) return;
     setSaving(true);
     try {
-      await apiFetch(`/api/categories/${editId}`, {
-        method: 'PUT',
-        body: JSON.stringify({ name: editName.trim(), emoji: editEmoji.trim() }),
-      });
-      toast('Category updated ✓');
-      setEditId(null);
-      onRefresh();
-    } catch (e: unknown) {
-      toast(e instanceof Error ? e.message : 'Update failed', 'error');
-    } finally {
-      setSaving(false);
-    }
+      await apiFetch(`/api/categories/${editId}`, { method: 'PUT', body: JSON.stringify({ name: editName.trim(), emoji: editEmoji.trim() }) });
+      toast('Category updated ✓'); setEditId(null); lsDel(CAT_CACHE_KEY); onRefresh();
+    } catch (e: unknown) { toast(e instanceof Error ? e.message : 'Update failed', 'error'); }
+    finally { setSaving(false); }
   };
 
   const deleteCategory = async (cat: Category) => {
@@ -191,33 +203,19 @@ function ManageCategoriesModal({ open, onClose, categories, onRefresh, toast }:
     setDeleting(cat.id);
     try {
       await apiFetch(`/api/categories/${cat.id}`, { method: 'DELETE' });
-      toast('Category deleted');
-      onRefresh();
-    } catch (e: unknown) {
-      toast(e instanceof Error ? e.message : 'Delete failed', 'error');
-    } finally {
-      setDeleting(null);
-    }
+      toast('Category deleted'); lsDel(CAT_CACHE_KEY); onRefresh();
+    } catch (e: unknown) { toast(e instanceof Error ? e.message : 'Delete failed', 'error'); }
+    finally { setDeleting(null); }
   };
 
   const addNew = async () => {
     if (!newName.trim() || !newEmoji.trim()) return;
     setSaving(true);
     try {
-      await apiFetch('/api/categories', {
-        method: 'POST',
-        body: JSON.stringify({ name: newName.trim(), emoji: newEmoji.trim() }),
-      });
-      toast('Category added ✓');
-      setNewName(''); setNewEmoji('📦');
-      setShowNewForm(false);
-      setShowEmojiPicker(null);
-      onRefresh();
-    } catch (e: unknown) {
-      toast(e instanceof Error ? e.message : 'Add failed', 'error');
-    } finally {
-      setSaving(false);
-    }
+      await apiFetch('/api/categories', { method: 'POST', body: JSON.stringify({ name: newName.trim(), emoji: newEmoji.trim() }) });
+      toast('Category added ✓'); setNewName(''); setNewEmoji('📦'); setShowNewForm(false); setShowEmojiPicker(null); lsDel(CAT_CACHE_KEY); onRefresh();
+    } catch (e: unknown) { toast(e instanceof Error ? e.message : 'Add failed', 'error'); }
+    finally { setSaving(false); }
   };
 
   return (
@@ -229,21 +227,14 @@ function ManageCategoriesModal({ open, onClose, categories, onRefresh, toast }:
           <button className="modal-close" onClick={onClose}>✕</button>
         </div>
         <div className="modal-body">
-
-          {/* Category list */}
           <div className="cat-manage-list">
             {categories.map(cat => (
               <div key={cat.id} className="cat-manage-row">
                 {editId === cat.id ? (
-                  /* ── Edit row ── */
                   <div className="cat-manage-edit-form">
                     <div className="cat-manage-edit-top">
-                      {/* Emoji button */}
                       <div className="cat-manage-emoji-wrap">
-                        <button className="cat-manage-emoji-btn"
-                          onClick={() => setShowEmojiPicker(p => p === 'edit' ? null : 'edit')}>
-                          {editEmoji}
-                        </button>
+                        <button className="cat-manage-emoji-btn" onClick={() => setShowEmojiPicker(p => p === 'edit' ? null : 'edit')}>{editEmoji}</button>
                         {showEmojiPicker === 'edit' && (
                           <div className="emoji-picker">
                             {COMMON_EMOJIS.map(e => (
@@ -261,13 +252,10 @@ function ManageCategoriesModal({ open, onClose, categories, onRefresh, toast }:
                     <div className="cat-manage-edit-actions">
                       <button className="btn btn-ghost" style={{ flex: 1, padding: '9px' }} onClick={cancelEdit}>Cancel</button>
                       <button className="btn btn-primary" style={{ flex: 1, padding: '9px' }}
-                        onClick={saveEdit} disabled={saving || !editName.trim()}>
-                        {saving ? '…' : 'Save'}
-                      </button>
+                        onClick={saveEdit} disabled={saving || !editName.trim()}>{saving ? '…' : 'Save'}</button>
                     </div>
                   </div>
                 ) : (
-                  /* ── Display row ── */
                   <>
                     <div className="cat-manage-info">
                       <span className="cat-manage-emoji">{cat.emoji}</span>
@@ -281,15 +269,12 @@ function ManageCategoriesModal({ open, onClose, categories, onRefresh, toast }:
                       </button>
                       <button className="btn-icon" title="Delete"
                         style={{ color: deleting === cat.id ? 'var(--text-sub)' : 'var(--danger)' }}
-                        disabled={deleting === cat.id}
-                        onClick={() => deleteCategory(cat)}>
+                        disabled={deleting === cat.id} onClick={() => deleteCategory(cat)}>
                         {deleting === cat.id
                           ? <div className="spinner" style={{ width: 14, height: 14, borderWidth: 1.5 }} />
-                          : (
-                            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          : <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                               <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-                            </svg>
-                          )}
+                            </svg>}
                       </button>
                     </div>
                   </>
@@ -297,17 +282,12 @@ function ManageCategoriesModal({ open, onClose, categories, onRefresh, toast }:
               </div>
             ))}
           </div>
-
-          {/* Add new category */}
           {showNewForm ? (
             <div className="cat-manage-new-form">
               <div className="cat-manage-new-label">New Category</div>
               <div className="cat-manage-edit-top">
                 <div className="cat-manage-emoji-wrap">
-                  <button className="cat-manage-emoji-btn"
-                    onClick={() => setShowEmojiPicker(p => p === 'new' ? null : 'new')}>
-                    {newEmoji}
-                  </button>
+                  <button className="cat-manage-emoji-btn" onClick={() => setShowEmojiPicker(p => p === 'new' ? null : 'new')}>{newEmoji}</button>
                   {showEmojiPicker === 'new' && (
                     <div className="emoji-picker">
                       {COMMON_EMOJIS.map(e => (
@@ -324,21 +304,14 @@ function ManageCategoriesModal({ open, onClose, categories, onRefresh, toast }:
               </div>
               <div className="cat-manage-edit-actions">
                 <button className="btn btn-ghost" style={{ flex: 1, padding: '9px' }}
-                  onClick={() => { setShowNewForm(false); setNewName(''); setNewEmoji('📦'); setShowEmojiPicker(null); }}>
-                  Cancel
-                </button>
+                  onClick={() => { setShowNewForm(false); setNewName(''); setNewEmoji('📦'); setShowEmojiPicker(null); }}>Cancel</button>
                 <button className="btn btn-primary" style={{ flex: 1, padding: '9px' }}
-                  onClick={addNew} disabled={saving || !newName.trim()}>
-                  {saving ? '…' : 'Add'}
-                </button>
+                  onClick={addNew} disabled={saving || !newName.trim()}>{saving ? '…' : 'Add'}</button>
               </div>
             </div>
           ) : (
-            <button className="cat-manage-add-btn" onClick={() => { setShowNewForm(true); setEditId(null); }}>
-              ＋ New Category
-            </button>
+            <button className="cat-manage-add-btn" onClick={() => { setShowNewForm(true); setEditId(null); }}>＋ New Category</button>
           )}
-
         </div>
       </div>
     </div>
@@ -347,56 +320,50 @@ function ManageCategoriesModal({ open, onClose, categories, onRefresh, toast }:
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
-  const [screen, setScreen]     = useState<'login' | 'dashboard' | 'profile'>('login');
+  const [screen, setScreen]         = useState<'login' | 'dashboard' | 'profile'>('login');
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [users, setUsers]       = useState<User[]>([]);
+  const [users, setUsers]           = useState<User[]>([]);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
-  const [newName, setNewName]   = useState('');
-  const [pinBuffer, setPinBuffer] = useState('');
-  const [pinModal, setPinModal] = useState<'none' | 'setup' | 'verify'>('none');
-  const [pinUser, setPinUser]   = useState<User | null>(null);
+  const [newName, setNewName]       = useState('');
+  const [pinBuffer, setPinBuffer]   = useState('');
+  const [pinModal, setPinModal]     = useState<'none' | 'setup' | 'verify'>('none');
+  const [pinUser, setPinUser]       = useState<User | null>(null);
 
-  const [expData, setExpData]   = useState<ExpensesData | null>(null);
-  const [allTimeData, setAllTimeData] = useState<ExpensesData | null>(null);
-  const [loading, setLoading]   = useState(false);
-  const [chartData, setChartData] = useState<{ date: string; total: number }[]>([]);
+  const [expData, setExpData]       = useState<ExpensesData | null>(null);
+  const [allTimeTotals, setAllTimeTotals] = useState<AllTimeTotals | null>(null);
+  const [loading, setLoading]       = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [chartData, setChartData]   = useState<{ date: string; total: number }[]>([]);
 
-  const [dateRange, setDateRange] = useState<'all' | 'today' | 'week' | 'month' | 'custom'>('today');
+  const [dateRange, setDateRange]   = useState<'all' | 'today' | 'week' | 'month' | 'custom'>('today');
   const [filterFrom, setFilterFrom] = useState('');
-  const [filterTo, setFilterTo]   = useState('');
+  const [filterTo, setFilterTo]     = useState('');
 
-  const [expModal, setExpModal] = useState(false);
-  const [editId, setEditId]     = useState<number | null>(null);
-  const [amount, setAmount]     = useState('');
-  const [desc, setDesc]         = useState('');
-  const [expDate, setExpDate]   = useState(today());
-  const [entryType, setEntryType] = useState<'expense' | 'income'>('expense');
-  const [category, setCategory] = useState('');
+  const [expModal, setExpModal]     = useState(false);
+  const [editId, setEditId]         = useState<string | null>(null);
+  const [amount, setAmount]         = useState('');
+  const [desc, setDesc]             = useState('');
+  const [expDate, setExpDate]       = useState(todayStr());
+  const [entryType, setEntryType]   = useState<'expense' | 'income'>('expense');
+  const [category, setCategory]     = useState('');
   const [paymentMode, setPaymentMode] = useState<'cash' | 'online'>('cash');
 
-  // ── Categories from DB ────────────────────────────────────────────────────
   const [categories, setCategories] = useState<Category[]>([]);
   const [catManageOpen, setCatManageOpen] = useState(false);
 
-  const [exportModal, setExportModal] = useState(false);
-  const [exportMode, setExportMode]   = useState<'month' | 'range'>('month');
-  const [exportMonth, setExportMonth] = useState(() => {
-    const d = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
-    return d.getMonth() + 1;
-  });
-  const [exportYear, setExportYear]   = useState(() => {
-    const d = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
-    return d.getFullYear();
-  });
-  const [exportFrom, setExportFrom]   = useState('');
-  const [exportTo, setExportTo]       = useState('');
+  const [exportModal, setExportModal]     = useState(false);
+  const [exportMode, setExportMode]       = useState<'month' | 'range'>('month');
+  const [exportMonth, setExportMonth]     = useState(() => new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' })).getMonth() + 1);
+  const [exportYear, setExportYear]       = useState(() => new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' })).getFullYear());
+  const [exportFrom, setExportFrom]       = useState('');
+  const [exportTo, setExportTo]           = useState('');
   const [exportDetailed, setExportDetailed] = useState(false);
   const [exportAllModal, setExportAllModal] = useState(false);
 
-  const [toasts, setToasts]     = useState<ToastItem[]>([]);
+  const [toasts, setToasts]         = useState<ToastItem[]>([]);
   const [installPrompt, setInstallPrompt] = useState<Event | null>(null);
   const [showInstall, setShowInstall]     = useState(false);
-  const [offline, setOffline]   = useState(false);
+  const [offline, setOffline]       = useState(false);
   const toastId = useRef(0);
 
   const toast = useCallback((msg: string, type: 'success' | 'error' = 'success') => {
@@ -408,31 +375,36 @@ export default function App() {
   // ── Init ──────────────────────────────────────────────────────────────────
   useEffect(() => {
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
-
     const upd = () => setOffline(!navigator.onLine);
     window.addEventListener('online', upd); window.addEventListener('offline', upd); upd();
-
     const handler = (e: Event) => {
       e.preventDefault(); setInstallPrompt(e);
       if (!localStorage.getItem('sekra_install_dismissed')) setShowInstall(true);
     };
     window.addEventListener('beforeinstallprompt', handler);
     window.addEventListener('appinstalled', () => setShowInstall(false));
-
     const saved = localStorage.getItem('sekra_user');
     if (saved) { const u = JSON.parse(saved); setCurrentUser(u); setScreen('dashboard'); }
-
     loadUsers();
     loadCategories();
-
     return () => {
       window.removeEventListener('online', upd); window.removeEventListener('offline', upd);
       window.removeEventListener('beforeinstallprompt', handler);
     };
   }, []);
 
+  // ── Chart: only when user/screen changes ─────────────────────────────────
   useEffect(() => {
-    if (currentUser && screen === 'dashboard') { loadExpenses(); loadChart(); loadAllTime(); }
+    if (currentUser && screen === 'dashboard') loadChart();
+  }, [currentUser, screen]);
+
+  // ── Expenses + totals: re-fetch on filter/user/screen change ─────────────
+  useEffect(() => {
+    if (currentUser && screen === 'dashboard') {
+      setExpData(null); // reset pagination when filter changes
+      loadExpenses();
+      loadAllTimeTotals();
+    }
   }, [currentUser, screen, dateRange, filterFrom, filterTo]);
 
   // ── API helpers ───────────────────────────────────────────────────────────
@@ -441,49 +413,62 @@ export default function App() {
   };
 
   const loadCategories = async () => {
-    try { setCategories(await apiFetch('/api/categories')); } catch {}
+    const cached = lsGet<Category[]>(CAT_CACHE_KEY, CAT_CACHE_TTL);
+    if (cached) {
+      setCategories(cached);
+      apiFetch('/api/categories').then(data => { setCategories(data); lsSet(CAT_CACHE_KEY, data); }).catch(() => {});
+      return;
+    }
+    try { const data = await apiFetch('/api/categories'); setCategories(data); lsSet(CAT_CACHE_KEY, data); } catch {}
   };
 
-  // Helper: get emoji for a category name from the loaded list
   const getCategoryEmoji = (catName: string) =>
     categories.find(c => c.name.toLowerCase() === catName.toLowerCase())?.emoji || '📦';
 
   const buildParams = () => {
-    const t = today();
+    const t = todayStr();
     if (dateRange === 'today') return `&date_from=${t}&date_to=${t}`;
     if (dateRange === 'week') {
       const nowIST = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
-      const dayOfWeek = nowIST.getDay();
-      nowIST.setDate(nowIST.getDate() - ((dayOfWeek + 6) % 7));
-      const from = nowIST.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
-      return `&date_from=${from}&date_to=${t}`;
+      nowIST.setDate(nowIST.getDate() - ((nowIST.getDay() + 6) % 7));
+      return `&date_from=${nowIST.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })}&date_to=${t}`;
     }
     if (dateRange === 'month') {
       const nowIST = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
-      const from = `${nowIST.getFullYear()}-${String(nowIST.getMonth() + 1).padStart(2, '0')}-01`;
-      return `&date_from=${from}&date_to=${t}`;
+      return `&date_from=${nowIST.getFullYear()}-${String(nowIST.getMonth() + 1).padStart(2, '0')}-01&date_to=${t}`;
     }
-    if (dateRange === 'custom' && filterFrom) {
+    if (dateRange === 'custom' && filterFrom)
       return `&date_from=${filterFrom}${filterTo ? `&date_to=${filterTo}` : ''}`;
-    }
     return '';
   };
 
-  const loadExpenses = async () => {
+  // loadExpenses: paginated in "all" mode, full-fetch in filtered mode
+  const loadExpenses = async (append = false) => {
     if (!currentUser) return;
-    setLoading(true);
+    if (append) setLoadingMore(true); else setLoading(true);
     try {
-      const data = await apiFetch(`/api/expenses/${currentUser.id}?grouped=true${buildParams()}`);
-      setExpData(data);
+      const isAll = dateRange === 'all';
+      const cursorParam = (append && expData?.nextCursor) ? `&cursor=${encodeURIComponent(expData.nextCursor)}` : '';
+      const url = `/api/expenses/${currentUser.id}?_=1${buildParams()}${isAll ? `&limit=10${cursorParam}` : ''}`;
+      const data: ExpensesData = await apiFetch(url);
+      setExpData(prev => append ? mergeGroups(prev, data) : data);
     } catch (e: unknown) { toast(e instanceof Error ? e.message : 'Failed to load', 'error'); }
-    finally { setLoading(false); }
+    finally { if (append) setLoadingMore(false); else setLoading(false); }
   };
 
-  const loadAllTime = async () => {
+  // loadAllTimeTotals: single doc read from users/{userId}/totals
+  // Cached in localStorage (5 min TTL). Busted after mutations.
+  const loadAllTimeTotals = async (bustCache = false) => {
     if (!currentUser) return;
+    const cacheKey = ALL_TIME_CACHE_KEY + currentUser.id;
+    if (!bustCache) {
+      const cached = lsGet<AllTimeTotals>(cacheKey, ALL_TIME_CACHE_TTL);
+      if (cached) { setAllTimeTotals(cached); return; }
+    }
     try {
-      const data = await apiFetch(`/api/expenses/${currentUser.id}?grouped=true`);
-      setAllTimeData(data);
+      const data: AllTimeTotals = await apiFetch(`/api/users/${currentUser.id}/totals`);
+      setAllTimeTotals(data);
+      lsSet(cacheKey, data);
     } catch {}
   };
 
@@ -536,21 +521,20 @@ export default function App() {
   const logout = () => {
     if (!confirm('Switch user?')) return;
     localStorage.removeItem('sekra_user');
-    setCurrentUser(null); setSelectedUser(null); setExpData(null);
+    setCurrentUser(null); setSelectedUser(null); setExpData(null); setAllTimeTotals(null);
     setScreen('login'); loadUsers();
   };
 
   // ── Expense CRUD ──────────────────────────────────────────────────────────
   const openAdd = () => {
-    setEditId(null); setAmount(''); setDesc(''); setExpDate(today());
+    setEditId(null); setAmount(''); setDesc(''); setExpDate(todayStr());
     setEntryType('expense'); setCategory(''); setPaymentMode('cash'); setExpModal(true);
   };
 
   const openEdit = (exp: Expense) => {
     setEditId(exp.id); setAmount(String(exp.amount)); setDesc(exp.description || '');
-    setExpDate(exp.date); setEntryType(exp.type || 'expense'); setCategory(exp.category || '');
-    setPaymentMode(exp.payment_mode || 'cash');
-    setExpModal(true);
+    setExpDate(exp.date); setEntryType(exp.type); setCategory(exp.category || '');
+    setPaymentMode(exp.payment_mode || 'cash'); setExpModal(true);
   };
 
   const saveExpense = async () => {
@@ -565,135 +549,138 @@ export default function App() {
         await apiFetch('/api/expenses', { method: 'POST', body: JSON.stringify({ user_id: currentUser!.id, amount: amt, type: entryType, category: cat, description: desc, date: expDate, payment_mode: paymentMode }) });
         toast('Entry added ✓');
       }
-      setExpModal(false); loadExpenses(); loadChart();
+      if (currentUser) lsDel(ALL_TIME_CACHE_KEY + currentUser.id);
+      setExpModal(false);
+      setExpData(null); // reset pagination so the new entry appears at top
+      loadExpenses();
+      loadAllTimeTotals(true);
+      loadChart();
     } catch (e: unknown) { toast(e instanceof Error ? e.message : 'Failed to save', 'error'); }
   };
 
-  const deleteExpense = async (id: number) => {
+  const deleteExpense = async (id: string) => {
     if (!confirm('Delete this entry?')) return;
     try {
       await apiFetch(`/api/expense/${id}`, { method: 'DELETE' });
-      toast('Entry deleted'); loadExpenses(); loadChart();
+      toast('Entry deleted');
+      if (currentUser) lsDel(ALL_TIME_CACHE_KEY + currentUser.id);
+      setExpData(null);
+      loadExpenses();
+      loadAllTimeTotals(true);
+      loadChart();
     } catch (e: unknown) { toast(e instanceof Error ? e.message : 'Delete failed', 'error'); }
   };
 
-  // ── Handler: add new category from the dropdown in the expense form ────────
   const handleAddCategoryFromDropdown = async (name: string) => {
-    // Use 📦 as default emoji when adding from the expense form quick-add
-    await apiFetch('/api/categories', {
-      method: 'POST',
-      body: JSON.stringify({ name: name.trim(), emoji: '📦' }),
-    });
+    await apiFetch('/api/categories', { method: 'POST', body: JSON.stringify({ name: name.trim(), emoji: '📦' }) });
+    lsDel(CAT_CACHE_KEY);
     await loadCategories();
   };
 
-  // ── Export PDF ────────────────────────────────────────────────────────────
+  // ── Export ────────────────────────────────────────────────────────────────
   const doExport = () => {
     if (!currentUser) return;
     let url = `/api/export/pdf?user_id=${currentUser.id}&detailed=${exportDetailed}`;
-    if (exportMode === 'month') {
-      url += `&mode=month&month=${exportMonth}&year=${exportYear}`;
-    } else {
+    if (exportMode === 'month') url += `&mode=month&month=${exportMonth}&year=${exportYear}`;
+    else {
       if (!exportFrom || !exportTo) { toast('Please select both dates', 'error'); return; }
       if (exportFrom > exportTo) { toast('From date must be before To date', 'error'); return; }
       url += `&mode=range&date_from=${exportFrom}&date_to=${exportTo}`;
     }
-    toast('Opening report…'); setExportModal(false);
-    window.open(url, '_blank');
+    toast('Opening report…'); setExportModal(false); window.open(url, '_blank');
   };
 
   const doExportAll = () => {
     let url = `/api/export/pdf/all?detailed=${exportDetailed}`;
-    if (exportMode === 'month') {
-      url += `&mode=month&month=${String(exportMonth).padStart(2, '0')}&year=${exportYear}`;
-    } else {
+    if (exportMode === 'month') url += `&mode=month&month=${String(exportMonth).padStart(2, '0')}&year=${exportYear}`;
+    else {
       if (!exportFrom || !exportTo) { toast('Please select both dates', 'error'); return; }
       if (exportFrom > exportTo) { toast('From date must be before To date', 'error'); return; }
       url += `&mode=range&date_from=${exportFrom}&date_to=${exportTo}`;
     }
-    toast('Opening all-members report…'); setExportAllModal(false);
-    window.open(url, '_blank');
+    toast('Opening all-members report…'); setExportAllModal(false); window.open(url, '_blank');
   };
 
   // ── Chart ─────────────────────────────────────────────────────────────────
   const chartDays = (() => {
     const days = [];
-    const now = new Date();
+    const nowIST = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
     for (let i = 6; i >= 0; i--) {
-      const d = new Date(now); d.setDate(d.getDate() - i);
-      const key = d.toISOString().slice(0, 10);
-      const row = chartData.find(r => r.date === key);
-      days.push({ key, total: row?.total || 0, isToday: i === 0 });
+      const d = new Date(nowIST); d.setDate(d.getDate() - i);
+      const key   = d.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+      const found = chartData.find(x => x.date === key);
+      days.push({ key, total: found?.total ?? 0, isToday: i === 0 });
     }
     return days;
   })();
-  const chartMax = Math.max(...chartDays.map(d => d.total), 1);
-  const dayNames = ['S','M','T','W','T','F','S'];
+  const chartMax  = Math.max(...chartDays.map(d => d.total), 1);
+  const dayNames  = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
 
-  const balance  = allTimeData?.balance      || 0;
-  const income   = allTimeData?.total_income  || 0;
-  const expense  = allTimeData?.total_expense || 0;
-  const count    = (expData?.groups || []).reduce((s, g) => s + g.expenses.length, 0);
-  const rangedIncome  = expData?.total_income  || 0;
-  const rangedExpense = expData?.total_expense || 0;
+  // ── Derived values ────────────────────────────────────────────────────────
+  const balance = allTimeTotals?.balance       ?? 0;
+  const income  = allTimeTotals?.total_income  ?? 0;
+  const expense = allTimeTotals?.total_expense ?? 0;
+  // For filtered views, range totals come from expData (which does full fetch)
+  const rangedIncome  = expData?.total_income  ?? 0;
+  const rangedExpense = expData?.total_expense ?? 0;
+  const count = allTimeTotals
+    ? undefined // entry count comes from chart data when totals are from user doc
+    : expData?.groups?.reduce((s, g) => s + g.expenses.length, 0) ?? 0;
+  const chartCount = chartData.reduce((s, d) => s + (d.total > 0 ? 1 : 0), 0);
 
-  // ─── Render ───────────────────────────────────────────────────────────────
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
     <>
-      {offline && <div className="offline-banner visible">📡 You&apos;re offline — showing cached data</div>}
-
-      {showInstall && (
-        <div className="install-banner">
-          <div className="install-banner-icon">📱</div>
-          <div className="install-banner-text">
-            <strong>Install Sekra</strong>
-            <span>Add to home screen for quick access</span>
-          </div>
-          <div className="install-banner-actions">
-            <button className="btn-install" onClick={async () => {
-              if (!installPrompt) return;
-              (installPrompt as BeforeInstallPromptEvent).prompt();
-              const { outcome } = await (installPrompt as BeforeInstallPromptEvent).userChoice;
-              setInstallPrompt(null); setShowInstall(false);
-              if (outcome === 'accepted') toast('App installed! 🎉');
-            }}>Install</button>
-            <button className="btn-dismiss" onClick={() => { setShowInstall(false); localStorage.setItem('sekra_install_dismissed', '1'); }}>✕</button>
-          </div>
-        </div>
-      )}
-
       <div className="app-shell">
+
         {/* ── LOGIN ── */}
         {screen === 'login' && (
           <div className="login-screen">
             <div className="login-logo">
-              <h1><span className="logo-accent">Sekra</span></h1>
-              <p>Personal budget tracker</p>
+              <h1>Sekra</h1>
+              <p>Your personal budget tracker</p>
             </div>
+
+            {offline && <div className="offline-banner">📡 You&apos;re offline</div>}
+
+            {showInstall && (
+              <div className="install-banner">
+                <span>Add Sekra to your home screen</span>
+                <div className="install-banner-actions">
+                  <button className="btn btn-primary btn-sm" onClick={async () => {
+                    if (installPrompt) {
+                      (installPrompt as BeforeInstallPromptEvent).prompt();
+                      const { outcome } = await (installPrompt as BeforeInstallPromptEvent).userChoice;
+                      if (outcome === 'accepted') setShowInstall(false);
+                    }
+                  }}>Install</button>
+                  <button className="btn btn-ghost btn-sm" onClick={() => { setShowInstall(false); localStorage.setItem('sekra_install_dismissed', '1'); }}>Later</button>
+                </div>
+              </div>
+            )}
+
             <div className="login-card">
               {users.length > 0 && (
-                <>
-                  <h2>Who&apos;s tracking?</h2>
-                  <div className="user-grid">
-                    {users.map(u => (
-                      <div key={u.id} className={`user-chip${selectedUser?.id === u.id ? ' selected' : ''}`}
-                        onClick={() => { setSelectedUser(u); setNewName(''); }}>
-                        <div className="chip-avatar">{initials(u.name)}</div>
-                        <span className="chip-name">{u.name}</span>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="divider">or</div>
-                </>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 4 }}>
+                  {users.map(u => (
+                    <button key={u.id}
+                      className={`user-chip${selectedUser?.id === u.id ? ' selected' : ''}`}
+                      onClick={() => { setSelectedUser(s => s?.id === u.id ? null : u); setNewName(''); setPinBuffer(''); }}>
+                      <div className="chip-avatar">{initials(u.name)}</div>
+                      <span className="chip-name">{u.name}</span>
+                    </button>
+                  ))}
+                </div>
               )}
+              {users.length > 0 && <div className="divider"><span>or create new</span></div>}
               <div className="form-group">
-                <label>New user</label>
-                <input className="form-control" placeholder="Your name…" value={newName}
-                  onChange={e => { setNewName(e.target.value); setSelectedUser(null); }} />
+                <label>Your name</label>
+                <input className="form-control" placeholder="Enter your name" value={newName}
+                  onChange={e => { setNewName(e.target.value); if (e.target.value) setSelectedUser(null); }} />
               </div>
-              {newName.trim() && !selectedUser && (
+              {newName.trim().length > 0 && (
                 <div className="form-group">
-                  <label>Set a PIN (optional)</label>
+                  <label>PIN (optional)</label>
                   <div className="pin-dots">
                     {[0,1,2,3].map(i => <div key={i} className={`pin-dot${pinBuffer.length > i ? ' filled' : ''}`} />)}
                   </div>
@@ -718,7 +705,7 @@ export default function App() {
               <div className="header-meta">
                 <button className="btn-icon" title="Export My PDF" onClick={() => {
                   setExportFrom(new Date(new Date().setDate(1)).toISOString().slice(0,10));
-                  setExportTo(today()); setExportModal(true);
+                  setExportTo(todayStr()); setExportModal(true);
                 }}>
                   <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
@@ -726,7 +713,7 @@ export default function App() {
                 </button>
                 <button className="btn-icon" title="Export All Members PDF" onClick={() => {
                   setExportFrom(new Date(new Date().setDate(1)).toISOString().slice(0,10));
-                  setExportTo(today()); setExportAllModal(true);
+                  setExportTo(todayStr()); setExportAllModal(true);
                 }}>
                   <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/>
@@ -740,7 +727,7 @@ export default function App() {
             </div>
 
             <div className="screen" style={{ animation: 'none', minHeight: 'unset', flex: 1 }}>
-              {/* Total card */}
+              {/* Balance card — always all-time from user doc */}
               <div className="total-card">
                 <div className="total-label">Balance</div>
                 <div className="total-amount">
@@ -760,21 +747,20 @@ export default function App() {
                     <div><div className="balance-sub-label">Spent</div><div className="balance-sub-val">₹{fmt(expense)}</div></div>
                   </div>
                 </div>
-                {/* Cash / Online split */}
                 <div className="pay-split-row">
                   <div className="pay-split-item">
                     <span className="pay-split-dot cash-dot" />
                     <span className="pay-split-label">Cash</span>
-                    <span className={`pay-split-val${(allTimeData?.cash_balance ?? 0) < 0 ? ' neg' : ''}`}>
-                      {(allTimeData?.cash_balance ?? 0) < 0 ? '-' : ''}₹{fmt(Math.abs(allTimeData?.cash_balance ?? 0))}
+                    <span className={`pay-split-val${(allTimeTotals?.cash_balance ?? 0) < 0 ? ' neg' : ''}`}>
+                      {(allTimeTotals?.cash_balance ?? 0) < 0 ? '-' : ''}₹{fmt(Math.abs(allTimeTotals?.cash_balance ?? 0))}
                     </span>
                   </div>
                   <div className="pay-split-sep" />
                   <div className="pay-split-item">
                     <span className="pay-split-dot online-dot" />
                     <span className="pay-split-label">Online</span>
-                    <span className={`pay-split-val${(allTimeData?.online_balance ?? 0) < 0 ? ' neg' : ''}`}>
-                      {(allTimeData?.online_balance ?? 0) < 0 ? '-' : ''}₹{fmt(Math.abs(allTimeData?.online_balance ?? 0))}
+                    <span className={`pay-split-val${(allTimeTotals?.online_balance ?? 0) < 0 ? ' neg' : ''}`}>
+                      {(allTimeTotals?.online_balance ?? 0) < 0 ? '-' : ''}₹{fmt(Math.abs(allTimeTotals?.online_balance ?? 0))}
                     </span>
                   </div>
                 </div>
@@ -782,7 +768,7 @@ export default function App() {
 
               {/* Chart */}
               <div className="chart-section">
-                <div className="chart-title">Last 7 days · {count} entries</div>
+                <div className="chart-title">Last 7 days · {chartCount} active days</div>
                 <div className="mini-chart">
                   {chartDays.map(d => (
                     <div key={d.key} className="chart-bar-wrap">
@@ -805,7 +791,7 @@ export default function App() {
                         else if (!filterFrom) {
                           const from = new Date(); from.setDate(1);
                           setFilterFrom(from.toISOString().slice(0,10));
-                          setFilterTo(today());
+                          setFilterTo(todayStr());
                         }
                       }}>
                       {r === 'all' ? 'All time' : r.charAt(0).toUpperCase() + r.slice(1)}
@@ -817,21 +803,19 @@ export default function App() {
                     <div className="date-filter-inputs">
                       <div className="date-input-wrap">
                         <label>From</label>
-                        <input type="date" className="form-control" value={filterFrom}
-                          onChange={e => setFilterFrom(e.target.value)} />
+                        <input type="date" className="form-control" value={filterFrom} onChange={e => setFilterFrom(e.target.value)} />
                       </div>
                       <div className="date-range-sep">—</div>
                       <div className="date-input-wrap">
                         <label>To</label>
-                        <input type="date" className="form-control" value={filterTo}
-                          onChange={e => setFilterTo(e.target.value)} />
+                        <input type="date" className="form-control" value={filterTo} onChange={e => setFilterTo(e.target.value)} />
                       </div>
                     </div>
                   </div>
                 )}
               </div>
 
-              {/* Range summary line */}
+              {/* Range summary */}
               {dateRange !== 'all' && expData && (
                 <div className="range-summary">
                   <span className="range-income">↑ ₹{fmt(rangedIncome)} earned</span>
@@ -840,7 +824,7 @@ export default function App() {
                 </div>
               )}
 
-              {/* Categories */}
+              {/* Transaction list */}
               <div className="categories-section">
                 {loading ? (
                   <div className="loader"><div className="spinner" /></div>
@@ -850,17 +834,32 @@ export default function App() {
                     <p>No entries yet.<br />Tap <strong>+</strong> to add your first one.</p>
                   </div>
                 ) : (
-                  <div className="categories-list">
-                    {expData.groups.map(g => (
-                      <CategoryCard
-                        key={g.category}
-                        group={g}
-                        getCategoryEmoji={getCategoryEmoji}
-                        onEdit={openEdit}
-                        onDelete={deleteExpense}
-                      />
-                    ))}
-                  </div>
+                  <>
+                    <div className="categories-list">
+                      {expData.groups.map(g => (
+                        <CategoryCard
+                          key={g.category}
+                          group={g}
+                          getCategoryEmoji={getCategoryEmoji}
+                          onEdit={openEdit}
+                          onDelete={deleteExpense}
+                        />
+                      ))}
+                    </div>
+
+                    {/* Load more — only shown in All time mode */}
+                    {dateRange === 'all' && expData.hasMore && (
+                      <button
+                        className="btn btn-ghost"
+                        style={{ width: '100%', marginTop: 12, padding: '12px' }}
+                        onClick={() => loadExpenses(true)}
+                        disabled={loadingMore}>
+                        {loadingMore
+                          ? <><div className="spinner" style={{ width: 14, height: 14, borderWidth: 2, display: 'inline-block', marginRight: 8 }} />Loading…</>
+                          : 'Load 10 more'}
+                      </button>
+                    )}
+                  </>
                 )}
               </div>
             </div>
@@ -906,30 +905,25 @@ export default function App() {
                 </div>
                 <div className="stat-card">
                   <div className="stat-label">Entries</div>
-                  <div className="stat-value">{count}</div>
+                  <div className="stat-value">{count ?? '—'}</div>
                 </div>
               </div>
               <div className="profile-actions">
-                <button className="btn btn-ghost" onClick={() => { setExportFrom(new Date(new Date().setDate(1)).toISOString().slice(0,10)); setExportTo(today()); setExportModal(true); }}>
+                <button className="btn btn-ghost" onClick={() => { setExportFrom(new Date(new Date().setDate(1)).toISOString().slice(0,10)); setExportTo(todayStr()); setExportModal(true); }}>
                   📄 Export My Report
                 </button>
-                <button className="btn btn-ghost" onClick={() => { setExportFrom(new Date(new Date().setDate(1)).toISOString().slice(0,10)); setExportTo(today()); setExportAllModal(true); }}>
+                <button className="btn btn-ghost" onClick={() => { setExportFrom(new Date(new Date().setDate(1)).toISOString().slice(0,10)); setExportTo(todayStr()); setExportAllModal(true); }}>
                   👥 Export All Members
                 </button>
-
-                {/* ── Manage Categories ── */}
                 <button className="btn btn-ghost profile-cat-btn" onClick={() => setCatManageOpen(true)}>
                   <span className="profile-cat-btn-left">
                     <span className="profile-cat-emoji-strip">
-                      {categories.slice(0, 4).map(c => (
-                        <span key={c.id}>{c.emoji}</span>
-                      ))}
+                      {categories.slice(0, 4).map(c => <span key={c.id}>{c.emoji}</span>)}
                     </span>
                     Manage Categories
                   </span>
                   <span className="profile-cat-count">{categories.length}</span>
                 </button>
-
                 <button className="btn btn-danger" style={{ width: '100%' }} onClick={logout}>Switch User</button>
               </div>
             </div>
@@ -950,7 +944,8 @@ export default function App() {
             </nav>
           </>
         )}
-      </div>
+
+      </div>{/* end app-shell */}
 
       {/* ── EXPENSE MODAL ── */}
       <div className={`modal-overlay${expModal ? ' open' : ''}`} onClick={e => { if (e.target === e.currentTarget) setExpModal(false); }}>
@@ -976,12 +971,7 @@ export default function App() {
             </div>
             <div className="form-group">
               <label>Category</label>
-              <CategoryDropdown
-                value={category}
-                onChange={setCategory}
-                categories={categories}
-                onAddNew={handleAddCategoryFromDropdown}
-              />
+              <CategoryDropdown value={category} onChange={setCategory} categories={categories} onAddNew={handleAddCategoryFromDropdown} />
             </div>
             <div className="form-group">
               <label>Description</label>
@@ -994,16 +984,8 @@ export default function App() {
             <div className="form-group">
               <label>Payment Mode</label>
               <div className="pay-mode-toggle">
-                <button
-                  className={`pay-mode-btn${paymentMode === 'cash' ? ' active cash' : ''}`}
-                  onClick={() => setPaymentMode('cash')}>
-                  💵 Cash
-                </button>
-                <button
-                  className={`pay-mode-btn${paymentMode === 'online' ? ' active online' : ''}`}
-                  onClick={() => setPaymentMode('online')}>
-                  ⚡ Online
-                </button>
+                <button className={`pay-mode-btn${paymentMode === 'cash' ? ' active cash' : ''}`} onClick={() => setPaymentMode('cash')}>💵 Cash</button>
+                <button className={`pay-mode-btn${paymentMode === 'online' ? ' active online' : ''}`} onClick={() => setPaymentMode('online')}>⚡ Online</button>
               </div>
             </div>
             <button className="btn btn-primary" style={{ marginTop: 8 }} onClick={saveExpense}>
@@ -1038,21 +1020,14 @@ export default function App() {
                 <div className="form-group">
                   <label>Year</label>
                   <select className="form-control" value={exportYear} onChange={e => setExportYear(Number(e.target.value))}>
-                    {Array.from({ length: 4 }, (_, i) => new Date().getFullYear() - i).map(y =>
-                      <option key={y} value={y}>{y}</option>)}
+                    {Array.from({ length: 4 }, (_, i) => new Date().getFullYear() - i).map(y => <option key={y} value={y}>{y}</option>)}
                   </select>
                 </div>
               </div>
             ) : (
               <div className="export-row">
-                <div className="form-group">
-                  <label>From</label>
-                  <input type="date" className="form-control" value={exportFrom} onChange={e => setExportFrom(e.target.value)} />
-                </div>
-                <div className="form-group">
-                  <label>To</label>
-                  <input type="date" className="form-control" value={exportTo} onChange={e => setExportTo(e.target.value)} />
-                </div>
+                <div className="form-group"><label>From</label><input type="date" className="form-control" value={exportFrom} onChange={e => setExportFrom(e.target.value)} /></div>
+                <div className="form-group"><label>To</label><input type="date" className="form-control" value={exportTo} onChange={e => setExportTo(e.target.value)} /></div>
               </div>
             )}
             <label className="export-checkbox-row">
@@ -1062,9 +1037,7 @@ export default function App() {
                 <span className="export-checkbox-sub">Include individual transactions inside each category</span>
               </div>
             </label>
-            <button className="btn btn-primary" style={{ marginTop: 16 }} onClick={doExport}>
-              📄 Generate Report
-            </button>
+            <button className="btn btn-primary" style={{ marginTop: 16 }} onClick={doExport}>📄 Generate Report</button>
           </div>
         </div>
       </div>
@@ -1094,21 +1067,14 @@ export default function App() {
                 <div className="form-group">
                   <label>Year</label>
                   <select className="form-control" value={exportYear} onChange={e => setExportYear(Number(e.target.value))}>
-                    {Array.from({ length: 4 }, (_, i) => new Date().getFullYear() - i).map(y =>
-                      <option key={y} value={y}>{y}</option>)}
+                    {Array.from({ length: 4 }, (_, i) => new Date().getFullYear() - i).map(y => <option key={y} value={y}>{y}</option>)}
                   </select>
                 </div>
               </div>
             ) : (
               <div className="export-row">
-                <div className="form-group">
-                  <label>From</label>
-                  <input type="date" className="form-control" value={exportFrom} onChange={e => setExportFrom(e.target.value)} />
-                </div>
-                <div className="form-group">
-                  <label>To</label>
-                  <input type="date" className="form-control" value={exportTo} onChange={e => setExportTo(e.target.value)} />
-                </div>
+                <div className="form-group"><label>From</label><input type="date" className="form-control" value={exportFrom} onChange={e => setExportFrom(e.target.value)} /></div>
+                <div className="form-group"><label>To</label><input type="date" className="form-control" value={exportTo} onChange={e => setExportTo(e.target.value)} /></div>
               </div>
             )}
             <label className="export-checkbox-row">
@@ -1118,9 +1084,7 @@ export default function App() {
                 <span className="export-checkbox-sub">Include individual transactions inside each category</span>
               </div>
             </label>
-            <button className="btn btn-primary" style={{ marginTop: 16 }} onClick={doExportAll}>
-              👥 Generate All Members Report
-            </button>
+            <button className="btn btn-primary" style={{ marginTop: 16 }} onClick={doExportAll}>👥 Generate All Members Report</button>
           </div>
         </div>
       </div>
@@ -1134,9 +1098,7 @@ export default function App() {
             <button className="modal-close" onClick={() => { setPinModal('none'); setPinBuffer(''); }}>✕</button>
           </div>
           <div className="modal-body" style={{ textAlign: 'center' }}>
-            <p style={{ color: 'var(--text-muted)', marginBottom: 16 }}>
-              Welcome back, {pinUser?.name}
-            </p>
+            <p style={{ color: 'var(--text-muted)', marginBottom: 16 }}>Welcome back, {pinUser?.name}</p>
             <div className="pin-dots" style={{ justifyContent: 'center' }}>
               {[0,1,2,3].map(i => <div key={i} className={`pin-dot${pinBuffer.length > i ? ' filled' : ''}`} />)}
             </div>
@@ -1146,25 +1108,20 @@ export default function App() {
       </div>
 
       {/* ── MANAGE CATEGORIES MODAL ── */}
-      <ManageCategoriesModal
-        open={catManageOpen}
-        onClose={() => setCatManageOpen(false)}
-        categories={categories}
-        onRefresh={loadCategories}
-        toast={toast}
-      />
+      <ManageCategoriesModal open={catManageOpen} onClose={() => setCatManageOpen(false)}
+        categories={categories} onRefresh={loadCategories} toast={toast} />
 
       <Toast toasts={toasts} dismiss={id => setToasts(t => t.filter(x => x.id !== id))} />
     </>
   );
 }
 
-// ─── Category Card Component ──────────────────────────────────────────────────
+// ─── Category Card ────────────────────────────────────────────────────────────
 function CategoryCard({ group, getCategoryEmoji, onEdit, onDelete }: {
   group: ExpenseGroup;
   getCategoryEmoji: (name: string) => string;
   onEdit: (e: Expense) => void;
-  onDelete: (id: number) => void;
+  onDelete: (id: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const icon = getCategoryEmoji(group.category);
@@ -1219,7 +1176,6 @@ function CategoryCard({ group, getCategoryEmoji, onEdit, onDelete }: {
   );
 }
 
-// Type declaration for PWA install prompt
 interface BeforeInstallPromptEvent extends Event {
   prompt(): Promise<void>;
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
