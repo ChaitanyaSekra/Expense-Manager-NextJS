@@ -23,6 +23,8 @@ export async function GET(
   const date_from = url.searchParams.get('date_from') || '';
   const date_to   = url.searchParams.get('date_to')   || '';
   const cursor    = url.searchParams.get('cursor')    || ''; // createdAt of last doc
+  const categoriesParam = url.searchParams.get('categories') || '';
+  const categoryFilter  = categoriesParam ? categoriesParam.split(',').map(c => c.trim()).filter(Boolean) : [];
 
   if (!userId) return NextResponse.json({ error: 'userId required' }, { status: 400 });
 
@@ -35,6 +37,7 @@ export async function GET(
       .orderBy('createdAt', 'desc')
       .limit(PAGE_SIZE + 1); // fetch one extra to detect hasMore
 
+    if (categoryFilter.length > 0) pgQuery = pgQuery.where('category', 'in', categoryFilter) as typeof pgQuery;
     if (cursor) pgQuery = pgQuery.startAfter(cursor) as typeof pgQuery;
 
     const pgSnap = await pgQuery.get();
@@ -60,6 +63,7 @@ export async function GET(
   let query = db.collection('expenses').where('userId', '==', userId);
   if (date_from) query = query.where('date', '>=', date_from) as typeof query;
   if (date_to)   query = query.where('date', '<=', date_to)   as typeof query;
+  if (categoryFilter.length > 0) query = query.where('category', 'in', categoryFilter) as typeof query;
 
   const snap = await query.get();
   const rows: Expense[] = snap.docs

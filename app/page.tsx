@@ -338,6 +338,7 @@ export default function App() {
   const [dateRange, setDateRange]   = useState<'all' | 'today' | 'week' | 'month' | 'custom'>('today');
   const [filterFrom, setFilterFrom] = useState('');
   const [filterTo, setFilterTo]     = useState('');
+  const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
 
   const [expModal, setExpModal]     = useState(false);
   const [editId, setEditId]         = useState<string | null>(null);
@@ -405,7 +406,7 @@ export default function App() {
       loadExpenses();
       loadAllTimeTotals();
     }
-  }, [currentUser, screen, dateRange, filterFrom, filterTo]);
+  }, [currentUser, screen, dateRange, filterFrom, filterTo, selectedCategories]);
 
   // ── API helpers ───────────────────────────────────────────────────────────
   const loadUsers = async () => {
@@ -427,19 +428,21 @@ export default function App() {
 
   const buildParams = () => {
     const t = todayStr();
-    if (dateRange === 'today') return `&date_from=${t}&date_to=${t}`;
-    if (dateRange === 'week') {
+    let dateParams = '';
+    if (dateRange === 'today') dateParams = `&date_from=${t}&date_to=${t}`;
+    else if (dateRange === 'week') {
       const nowIST = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
       nowIST.setDate(nowIST.getDate() - ((nowIST.getDay() + 6) % 7));
-      return `&date_from=${nowIST.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })}&date_to=${t}`;
+      dateParams = `&date_from=${nowIST.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })}&date_to=${t}`;
     }
-    if (dateRange === 'month') {
+    else if (dateRange === 'month') {
       const nowIST = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
-      return `&date_from=${nowIST.getFullYear()}-${String(nowIST.getMonth() + 1).padStart(2, '0')}-01&date_to=${t}`;
+      dateParams = `&date_from=${nowIST.getFullYear()}-${String(nowIST.getMonth() + 1).padStart(2, '0')}-01&date_to=${t}`;
     }
-    if (dateRange === 'custom' && filterFrom)
-      return `&date_from=${filterFrom}${filterTo ? `&date_to=${filterTo}` : ''}`;
-    return '';
+    else if (dateRange === 'custom' && filterFrom)
+      dateParams = `&date_from=${filterFrom}${filterTo ? `&date_to=${filterTo}` : ''}`;
+    const catParam = selectedCategories.length > 0 ? `&categories=${encodeURIComponent(selectedCategories.join(','))}` : '';
+    return dateParams + catParam;
   };
 
   // loadExpenses: paginated in "all" mode, full-fetch in filtered mode
@@ -813,6 +816,49 @@ export default function App() {
                     </div>
                   </div>
                 )}
+
+                {/* Category filter */}
+                <div className="date-filter-pills" style={{ marginTop: 8 }}>
+                  <button
+                    className={`filter-pill cat-pill${selectedCategories.length === 0 ? ' active' : ''}`}
+                    onClick={() => setSelectedCategories([])}>
+                    All
+                  </button>
+                  {categories.map(cat => {
+                    const isActive = selectedCategories.includes(cat.name);
+                    return (
+                      <button
+                        key={cat.id}
+                        className={`filter-pill cat-pill${isActive ? ' active' : ''}`}
+                        onClick={() => {
+                          setSelectedCategories(prev =>
+                            prev.includes(cat.name)
+                              ? prev.filter(c => c !== cat.name)
+                              : [...prev, cat.name]
+                          );
+                        }}>
+                        {cat.emoji} {cat.name}
+                        {isActive && (
+                          <span
+                            className="cat-pill-x"
+                            onClick={e => {
+                              e.stopPropagation();
+                              setSelectedCategories(prev => prev.filter(c => c !== cat.name));
+                            }}>
+                            ×
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                  {selectedCategories.length > 0 && (
+                    <button
+                      className="filter-pill cat-pill-clear"
+                      onClick={() => setSelectedCategories([])}>
+                      Clear ×
+                    </button>
+                  )}
+                </div>
               </div>
 
               {/* Range summary */}
