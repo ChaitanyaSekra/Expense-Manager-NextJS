@@ -318,6 +318,171 @@ function ManageCategoriesModal({ open, onClose, categories, onRefresh, toast }:
   );
 }
 
+// ─── FilterBar ────────────────────────────────────────────────────────────────
+function FilterBar({
+  dateRange, setDateRange, filterFrom, setFilterFrom, filterTo, setFilterTo,
+  categories, selectedCategories, setSelectedCategories,
+}: {
+  dateRange: 'all' | 'today' | 'week' | 'month' | 'custom';
+  setDateRange: (r: 'all' | 'today' | 'week' | 'month' | 'custom') => void;
+  filterFrom: string; setFilterFrom: (v: string) => void;
+  filterTo: string;   setFilterTo:   (v: string) => void;
+  categories: Category[];
+  selectedCategories: string[];
+  setSelectedCategories: (v: string[]) => void;
+}) {
+  const [dateOpen, setDateOpen]   = useState(false);
+  const [catOpen,  setCatOpen]    = useState(false);
+  const [catQuery, setCatQuery]   = useState('');
+  const dateRef = useRef<HTMLDivElement>(null);
+  const catRef  = useRef<HTMLDivElement>(null);
+
+  // Close dropdowns on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (dateRef.current && !dateRef.current.contains(e.target as Node)) setDateOpen(false);
+      if (catRef.current  && !catRef.current.contains(e.target as Node))  setCatOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const dateLabels: Record<string, string> = { all: 'All time', today: 'Today', week: 'Week', month: 'Month', custom: 'Custom' };
+  const filteredCats = catQuery
+    ? categories.filter(c => c.name.toLowerCase().includes(catQuery.toLowerCase()))
+    : categories;
+
+  const catLabel = selectedCategories.length === 0
+    ? 'All Categories'
+    : selectedCategories.length === 1
+      ? selectedCategories[0]
+      : `${selectedCategories.length} selected`;
+
+  const handleDateSelect = (r: 'all' | 'today' | 'week' | 'month' | 'custom') => {
+    setDateRange(r);
+    if (r !== 'custom') { setFilterFrom(''); setFilterTo(''); setDateOpen(false); }
+    else if (!filterFrom) {
+      const from = new Date(); from.setDate(1);
+      setFilterFrom(from.toISOString().slice(0, 10));
+      setFilterTo(new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }));
+    }
+  };
+
+  const toggleCat = (name: string) => {
+    setSelectedCategories(
+      selectedCategories.includes(name)
+        ? selectedCategories.filter(c => c !== name)
+        : [...selectedCategories, name]
+    );
+  };
+
+  return (
+    <div className="filter-bar">
+      {/* Date dropdown */}
+      <div className="fbar-dropdown" ref={dateRef}>
+        <button
+          className={`fbar-btn${dateOpen ? ' open' : ''}${dateRange !== 'today' ? ' active' : ''}`}
+          onClick={() => { setDateOpen(o => !o); setCatOpen(false); }}>
+          <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>
+          </svg>
+          <span>{dateLabels[dateRange]}</span>
+          <svg className="fbar-chevron" width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7"/>
+          </svg>
+        </button>
+
+        {dateOpen && (
+          <div className="fbar-panel fbar-date-panel">
+            {(['today', 'week', 'month', 'all', 'custom'] as const).map(r => (
+              <button
+                key={r}
+                className={`fbar-option${dateRange === r ? ' selected' : ''}`}
+                onClick={() => handleDateSelect(r)}>
+                {dateLabels[r]}
+                {dateRange === r && <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7"/></svg>}
+              </button>
+            ))}
+            {dateRange === 'custom' && (
+              <div className="fbar-custom-inputs">
+                <div className="fbar-input-row">
+                  <div className="fbar-input-group">
+                    <label>From</label>
+                    <input type="date" className="form-control" value={filterFrom} onChange={e => setFilterFrom(e.target.value)} />
+                  </div>
+                  <div className="fbar-input-sep">—</div>
+                  <div className="fbar-input-group">
+                    <label>To</label>
+                    <input type="date" className="form-control" value={filterTo} onChange={e => setFilterTo(e.target.value)} />
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Category dropdown */}
+      <div className="fbar-dropdown" ref={catRef}>
+        <button
+          className={`fbar-btn${catOpen ? ' open' : ''}${selectedCategories.length > 0 ? ' active' : ''}`}
+          onClick={() => { setCatOpen(o => !o); setDateOpen(false); }}>
+          <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A2 2 0 013 12V7a4 4 0 014-4z"/>
+          </svg>
+          <span>{catLabel}</span>
+          <svg className="fbar-chevron" width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7"/>
+          </svg>
+        </button>
+
+        {catOpen && (
+          <div className="fbar-panel fbar-cat-panel">
+            <div className="fbar-search-wrap">
+              <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <circle cx="11" cy="11" r="8"/><path strokeLinecap="round" d="M21 21l-4.35-4.35"/>
+              </svg>
+              <input
+                className="fbar-search-input"
+                placeholder="Search categories…"
+                value={catQuery}
+                onChange={e => setCatQuery(e.target.value)}
+                autoFocus
+              />
+              {catQuery && <button className="fbar-search-clear" onClick={() => setCatQuery('')}>×</button>}
+            </div>
+            <div className="fbar-cat-list">
+              {filteredCats.map(cat => {
+                const active = selectedCategories.includes(cat.name);
+                return (
+                  <button
+                    key={cat.id}
+                    className={`fbar-cat-option${active ? ' selected' : ''}`}
+                    onClick={() => toggleCat(cat.name)}>
+                    <span className="fbar-cat-check">{active ? '✓' : ''}</span>
+                    <span className="fbar-cat-emoji">{cat.emoji}</span>
+                    <span className="fbar-cat-name">{cat.name}</span>
+                  </button>
+                );
+              })}
+              {filteredCats.length === 0 && (
+                <div className="fbar-cat-empty">No categories found</div>
+              )}
+            </div>
+            {selectedCategories.length > 0 && (
+              <div className="fbar-cat-footer">
+                <button className="fbar-clear-btn" onClick={() => { setSelectedCategories([]); setCatQuery(''); }}>
+                  Clear all
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
   const [screen, setScreen]         = useState<'login' | 'dashboard' | 'profile'>('login');
@@ -459,7 +624,8 @@ export default function App() {
     finally { if (append) setLoadingMore(false); else setLoading(false); }
   };
 
-  // loadAllTimeTotals: single doc read from users/{userId}/totals
+
+  // loadAllTimeTotals: reads totals field directly from the user doc
   // Cached in localStorage (5 min TTL). Busted after mutations.
   const loadAllTimeTotals = async (bustCache = false) => {
     if (!currentUser) return;
@@ -604,21 +770,6 @@ export default function App() {
     toast('Opening all-members report…'); setExportAllModal(false); window.open(url, '_blank');
   };
 
-  // ── Chart ─────────────────────────────────────────────────────────────────
-  const chartDays = (() => {
-    const days = [];
-    const nowIST = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date(nowIST); d.setDate(d.getDate() - i);
-      const key   = d.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
-      const found = chartData.find(x => x.date === key);
-      days.push({ key, total: found?.total ?? 0, isToday: i === 0 });
-    }
-    return days;
-  })();
-  const chartMax  = Math.max(...chartDays.map(d => d.total), 1);
-  const dayNames  = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
-
   // ── Derived values ────────────────────────────────────────────────────────
   const balance = allTimeTotals?.balance       ?? 0;
   const income  = allTimeTotals?.total_income  ?? 0;
@@ -626,10 +777,6 @@ export default function App() {
   // For filtered views, range totals come from expData (which does full fetch)
   const rangedIncome  = expData?.total_income  ?? 0;
   const rangedExpense = expData?.total_expense ?? 0;
-  const count = allTimeTotals
-    ? undefined // entry count comes from chart data when totals are from user doc
-    : expData?.groups?.reduce((s, g) => s + g.expenses.length, 0) ?? 0;
-  const chartCount = chartData.reduce((s, d) => s + (d.total > 0 ? 1 : 0), 0);
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -769,97 +916,18 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Chart */}
-              <div className="chart-section">
-                <div className="chart-title">Last 7 days · {chartCount} active days</div>
-                <div className="mini-chart">
-                  {chartDays.map(d => (
-                    <div key={d.key} className="chart-bar-wrap">
-                      <div className={`chart-bar${d.isToday ? ' today' : ''}`}
-                        style={{ height: `${Math.max((d.total / chartMax) * 100, 4)}%` }} />
-                      <div className="chart-day">{d.isToday ? '•' : dayNames[new Date(d.key + 'T00:00:00').getDay()]}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Date filter */}
-              <div className="date-filter">
-                <div className="date-filter-pills">
-                  {(['all', 'today', 'week', 'month', 'custom'] as const).map(r => (
-                    <button key={r} className={`filter-pill${dateRange === r ? ' active' : ''}`}
-                      onClick={() => {
-                        setDateRange(r);
-                        if (r !== 'custom') { setFilterFrom(''); setFilterTo(''); }
-                        else if (!filterFrom) {
-                          const from = new Date(); from.setDate(1);
-                          setFilterFrom(from.toISOString().slice(0,10));
-                          setFilterTo(todayStr());
-                        }
-                      }}>
-                      {r === 'all' ? 'All time' : r.charAt(0).toUpperCase() + r.slice(1)}
-                    </button>
-                  ))}
-                </div>
-                {dateRange === 'custom' && (
-                  <div className="date-filter-custom">
-                    <div className="date-filter-inputs">
-                      <div className="date-input-wrap">
-                        <label>From</label>
-                        <input type="date" className="form-control" value={filterFrom} onChange={e => setFilterFrom(e.target.value)} />
-                      </div>
-                      <div className="date-range-sep">—</div>
-                      <div className="date-input-wrap">
-                        <label>To</label>
-                        <input type="date" className="form-control" value={filterTo} onChange={e => setFilterTo(e.target.value)} />
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Category filter */}
-                <div className="date-filter-pills" style={{ marginTop: 8 }}>
-                  <button
-                    className={`filter-pill cat-pill${selectedCategories.length === 0 ? ' active' : ''}`}
-                    onClick={() => setSelectedCategories([])}>
-                    All
-                  </button>
-                  {categories.map(cat => {
-                    const isActive = selectedCategories.includes(cat.name);
-                    return (
-                      <button
-                        key={cat.id}
-                        className={`filter-pill cat-pill${isActive ? ' active' : ''}`}
-                        onClick={() => {
-                          setSelectedCategories(prev =>
-                            prev.includes(cat.name)
-                              ? prev.filter(c => c !== cat.name)
-                              : [...prev, cat.name]
-                          );
-                        }}>
-                        {cat.emoji} {cat.name}
-                        {isActive && (
-                          <span
-                            className="cat-pill-x"
-                            onClick={e => {
-                              e.stopPropagation();
-                              setSelectedCategories(prev => prev.filter(c => c !== cat.name));
-                            }}>
-                            ×
-                          </span>
-                        )}
-                      </button>
-                    );
-                  })}
-                  {selectedCategories.length > 0 && (
-                    <button
-                      className="filter-pill cat-pill-clear"
-                      onClick={() => setSelectedCategories([])}>
-                      Clear ×
-                    </button>
-                  )}
-                </div>
-              </div>
+              {/* Filters */}
+              <FilterBar
+                dateRange={dateRange}
+                setDateRange={setDateRange}
+                filterFrom={filterFrom}
+                setFilterFrom={setFilterFrom}
+                filterTo={filterTo}
+                setFilterTo={setFilterTo}
+                categories={categories}
+                selectedCategories={selectedCategories}
+                setSelectedCategories={setSelectedCategories}
+              />
 
               {/* Range summary */}
               {dateRange !== 'all' && expData && (
@@ -951,7 +1019,7 @@ export default function App() {
                 </div>
                 <div className="stat-card">
                   <div className="stat-label">Entries</div>
-                  <div className="stat-value">{count ?? '—'}</div>
+                  <div className="stat-value">{expData?.groups?.reduce((s, g) => s + g.expenses.length, 0) ?? '—'}</div>
                 </div>
               </div>
               <div className="profile-actions">

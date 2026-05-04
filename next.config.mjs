@@ -7,7 +7,8 @@ import { resolve } from 'path';
 const nextConfig = {
   allowedDevOrigins: ['192.168.0.167'],
   allowedDevOrigins: ['192.168.1.23'],
-  allowedDevOrigins: ['192.168.0.167']
+  allowedDevOrigins: ['192.168.0.167'],
+  allowedDevOrigins: ['192.168.1.23']
 };
 
 // ── Inject deploy version into sw.js at build time ───────────────────────────

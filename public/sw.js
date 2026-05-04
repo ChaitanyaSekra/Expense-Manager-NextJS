@@ -2,7 +2,7 @@
 // __SEKRA_VERSION__ is replaced with the git commit SHA (or timestamp) on each
 // Vercel deploy, so every new deploy gets a fresh cache name and the old one
 // is deleted automatically.
-const CACHE_NAME = 'sekra-monlt102';
+const CACHE_NAME = 'sekra-moqw1aqi';
 
 // Assets to pre-cache on install
 const PRECACHE_URLS = ['/', '/manifest.json'];
