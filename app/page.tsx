@@ -22,6 +22,15 @@ interface AllTimeTotals {
   online_income: number; online_expense: number; online_balance: number;
 }
 interface ToastItem { id: number; msg: string; type: 'success' | 'error'; }
+interface CCExpense { id: string; amount: number; category: string; description: string; date: string; }
+interface CCExpenseGroup { category: string; total: number; expenses: CCExpense[]; }
+interface CCExpensesData {
+  groups: CCExpenseGroup[];
+  total_spent?: number;
+  used_categories?: string[];
+  hasMore?: boolean;
+  nextCursor?: string | null;
+}
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const ALL_TIME_CACHE_KEY = 'sekra_alltime_';  // + userId suffix
@@ -71,6 +80,23 @@ function mergeGroups(existing: ExpensesData | null, incoming: ExpensesData): Exp
       ex.net   = Math.round((ex.net   + g.net)   * 100) / 100;
       ex.total = Math.round((ex.total + g.total)  * 100) / 100;
       ex._is_income = ex.net >= 0;
+    } else {
+      groupMap.set(g.category, { ...g });
+    }
+  }
+  merged.groups = [...groupMap.values()];
+  return merged;
+}
+
+// ─── Merge CC groups helper ───────────────────────────────────────────────────
+function mergeCCGroups(existing: CCExpensesData, incoming: CCExpensesData): CCExpensesData {
+  const merged = { ...existing, hasMore: incoming.hasMore, nextCursor: incoming.nextCursor };
+  const groupMap = new Map(existing.groups.map(g => [g.category, { ...g, expenses: [...g.expenses] }]));
+  for (const g of incoming.groups) {
+    if (groupMap.has(g.category)) {
+      const ex = groupMap.get(g.category)!;
+      ex.expenses = [...ex.expenses, ...g.expenses];
+      ex.total = Math.round((ex.total + g.total) * 100) / 100;
     } else {
       groupMap.set(g.category, { ...g });
     }
@@ -485,7 +511,7 @@ function FilterBar({
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
-  const [screen, setScreen]         = useState<'login' | 'dashboard' | 'profile'>('login');
+  const [screen, setScreen]         = useState<'login' | 'dashboard' | 'credit-card' | 'profile'>('login');
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [users, setUsers]           = useState<User[]>([]);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
@@ -517,14 +543,31 @@ export default function App() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [catManageOpen, setCatManageOpen] = useState(false);
 
-  const [exportModal, setExportModal]     = useState(false);
-  const [exportMode, setExportMode]       = useState<'month' | 'range'>('month');
-  const [exportMonth, setExportMonth]     = useState(() => new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' })).getMonth() + 1);
-  const [exportYear, setExportYear]       = useState(() => new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' })).getFullYear());
-  const [exportFrom, setExportFrom]       = useState('');
-  const [exportTo, setExportTo]           = useState('');
+  const [exportModal, setExportModal]       = useState(false);
+  const [exportMode, setExportMode]         = useState<'month' | 'range'>('month');
+  const [exportMonth, setExportMonth]       = useState(() => new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' })).getMonth() + 1);
+  const [exportYear, setExportYear]         = useState(() => new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' })).getFullYear());
+  const [exportFrom, setExportFrom]         = useState('');
+  const [exportTo, setExportTo]             = useState('');
   const [exportDetailed, setExportDetailed] = useState(false);
-  const [exportAllModal, setExportAllModal] = useState(false);
+  const [exportAllUsers, setExportAllUsers] = useState(false);   // toggle: personal vs all-members
+  const [exportIsCC, setExportIsCC]         = useState(false);   // toggle: main expenses vs CC
+  const [exportAllModal, setExportAllModal] = useState(false);   // kept for compat — not used
+
+  // ── Credit Card state ─────────────────────────────────────────────────────
+  const [ccData, setCCData]               = useState<CCExpensesData | null>(null);
+  const [ccLoading, setCCLoading]         = useState(false);
+  const [ccLoadingMore, setCCLoadingMore] = useState(false);
+  const [ccDateRange, setCCDateRange]     = useState<'all' | 'today' | 'week' | 'month' | 'custom'>('today');
+  const [ccFilterFrom, setCCFilterFrom]   = useState('');
+  const [ccFilterTo, setCCFilterTo]       = useState('');
+  const [ccSelCats, setCCSelCats]         = useState<string[]>([]);
+  const [ccModal, setCCModal]             = useState(false);
+  const [ccEditId, setCCEditId]           = useState<string | null>(null);
+  const [ccAmount, setCCAmount]           = useState('');
+  const [ccDesc, setCCDesc]               = useState('');
+  const [ccDate, setCCDate]               = useState(todayStr());
+  const [ccCategory, setCCCategory]       = useState('');
 
   const [toasts, setToasts]         = useState<ToastItem[]>([]);
   const [installPrompt, setInstallPrompt] = useState<Event | null>(null);
@@ -572,6 +615,14 @@ export default function App() {
       loadAllTimeTotals();
     }
   }, [currentUser, screen, dateRange, filterFrom, filterTo, selectedCategories]);
+
+  // ── CC: re-fetch on filter/screen change ──────────────────────────────────
+  useEffect(() => {
+    if (currentUser && screen === 'credit-card') {
+      setCCData(null);
+      loadCCExpenses();
+    }
+  }, [currentUser, screen, ccDateRange, ccFilterFrom, ccFilterTo, ccSelCats]);
 
   // ── API helpers ───────────────────────────────────────────────────────────
   const loadUsers = async () => {
@@ -644,6 +695,76 @@ export default function App() {
   const loadChart = async () => {
     if (!currentUser) return;
     try { setChartData(await apiFetch(`/api/expenses/${currentUser.id}/summary`)); } catch {}
+  };
+
+  // ── CC API helpers ────────────────────────────────────────────────────────
+  const buildCCParams = () => {
+    const t = todayStr();
+    let dateParams = '';
+    if (ccDateRange === 'today') dateParams = `&date_from=${t}&date_to=${t}`;
+    else if (ccDateRange === 'week') {
+      const nowIST = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+      nowIST.setDate(nowIST.getDate() - ((nowIST.getDay() + 6) % 7));
+      dateParams = `&date_from=${nowIST.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })}&date_to=${t}`;
+    }
+    else if (ccDateRange === 'month') {
+      const nowIST = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+      dateParams = `&date_from=${nowIST.getFullYear()}-${String(nowIST.getMonth() + 1).padStart(2, '0')}-01&date_to=${t}`;
+    }
+    else if (ccDateRange === 'custom' && ccFilterFrom)
+      dateParams = `&date_from=${ccFilterFrom}${ccFilterTo ? `&date_to=${ccFilterTo}` : ''}`;
+    const catParam = ccSelCats.length > 0 ? `&categories=${encodeURIComponent(ccSelCats.join(','))}` : '';
+    return dateParams + catParam;
+  };
+
+  const loadCCExpenses = async (append = false) => {
+    if (!currentUser) return;
+    if (append) setCCLoadingMore(true); else setCCLoading(true);
+    try {
+      const isAll = ccDateRange === 'all';
+      const cursorParam = (append && ccData?.nextCursor) ? `&cursor=${encodeURIComponent(ccData.nextCursor)}` : '';
+      const url = `/api/cc-expenses/${currentUser.id}?_=1${buildCCParams()}${isAll ? `&limit=10${cursorParam}` : ''}`;
+      const data: CCExpensesData = await apiFetch(url);
+      setCCData(prev => append && prev ? mergeCCGroups(prev, data) : data);
+    } catch (e: unknown) { toast(e instanceof Error ? e.message : 'Failed to load', 'error'); }
+    finally { if (append) setCCLoadingMore(false); else setCCLoading(false); }
+  };
+
+  const openCCAdd = () => {
+    setCCEditId(null); setCCAmount(''); setCCDesc(''); setCCDate(todayStr()); setCCCategory(''); setCCModal(true);
+  };
+
+  const openCCEdit = (e: CCExpense) => {
+    setCCEditId(e.id); setCCAmount(String(e.amount)); setCCDesc(e.description || '');
+    setCCDate(e.date); setCCCategory(e.category || ''); setCCModal(true);
+  };
+
+  const saveCCExpense = async () => {
+    const amt = parseFloat(ccAmount);
+    if (!amt || amt <= 0) { toast('Please enter a valid amount', 'error'); return; }
+    const cat = ccCategory || 'Uncategorized';
+    try {
+      if (ccEditId) {
+        await apiFetch(`/api/cc-expense/${ccEditId}`, { method: 'PUT', body: JSON.stringify({ amount: amt, category: cat, description: ccDesc, date: ccDate }) });
+        toast('CC entry updated ✓');
+      } else {
+        await apiFetch('/api/cc-expenses', { method: 'POST', body: JSON.stringify({ user_id: currentUser!.id, amount: amt, category: cat, description: ccDesc, date: ccDate }) });
+        toast('CC entry added ✓');
+      }
+      setCCModal(false);
+      setCCData(null);
+      loadCCExpenses();
+    } catch (e: unknown) { toast(e instanceof Error ? e.message : 'Failed to save', 'error'); }
+  };
+
+  const deleteCCExpense = async (id: string) => {
+    if (!confirm('Delete this CC entry?')) return;
+    try {
+      await apiFetch(`/api/cc-expense/${id}`, { method: 'DELETE' });
+      toast('CC entry deleted');
+      setCCData(null);
+      loadCCExpenses();
+    } catch (e: unknown) { toast(e instanceof Error ? e.message : 'Delete failed', 'error'); }
   };
 
   // ── Login ─────────────────────────────────────────────────────────────────
@@ -749,26 +870,30 @@ export default function App() {
   // ── Export ────────────────────────────────────────────────────────────────
   const doExport = () => {
     if (!currentUser) return;
-    let url = `/api/export/pdf?user_id=${currentUser.id}&detailed=${exportDetailed}`;
-    if (exportMode === 'month') url += `&mode=month&month=${exportMonth}&year=${exportYear}`;
-    else {
+    let dateStr = '';
+    if (exportMode === 'month') {
+      dateStr = `&mode=month&month=${exportMonth}&year=${exportYear}`;
+    } else {
       if (!exportFrom || !exportTo) { toast('Please select both dates', 'error'); return; }
       if (exportFrom > exportTo) { toast('From date must be before To date', 'error'); return; }
-      url += `&mode=range&date_from=${exportFrom}&date_to=${exportTo}`;
+      dateStr = `&mode=range&date_from=${exportFrom}&date_to=${exportTo}`;
     }
-    toast('Opening report…'); setExportModal(false); window.open(url, '_blank');
+    let url = '';
+    if (exportIsCC) {
+      url = exportAllUsers
+        ? `/api/export/pdf/cc/all?detailed=${exportDetailed}${dateStr}`
+        : `/api/export/pdf/cc?user_id=${currentUser.id}&detailed=${exportDetailed}${dateStr}`;
+    } else {
+      url = exportAllUsers
+        ? `/api/export/pdf/all?detailed=${exportDetailed}${dateStr}`
+        : `/api/export/pdf?user_id=${currentUser.id}&detailed=${exportDetailed}${dateStr}`;
+    }
+    toast('Opening report…');
+    setExportModal(false);
+    window.open(url, '_blank');
   };
 
-  const doExportAll = () => {
-    let url = `/api/export/pdf/all?detailed=${exportDetailed}`;
-    if (exportMode === 'month') url += `&mode=month&month=${String(exportMonth).padStart(2, '0')}&year=${exportYear}`;
-    else {
-      if (!exportFrom || !exportTo) { toast('Please select both dates', 'error'); return; }
-      if (exportFrom > exportTo) { toast('From date must be before To date', 'error'); return; }
-      url += `&mode=range&date_from=${exportFrom}&date_to=${exportTo}`;
-    }
-    toast('Opening all-members report…'); setExportAllModal(false); window.open(url, '_blank');
-  };
+  const doExportAll = doExport; // kept for any residual references
 
   // ── Derived values ────────────────────────────────────────────────────────
   const balance = allTimeTotals?.balance       ?? 0;
@@ -853,22 +978,6 @@ export default function App() {
             <div className="app-header">
               <h1>Sekra</h1>
               <div className="header-meta">
-                <button className="btn-icon" title="Export My PDF" onClick={() => {
-                  setExportFrom(new Date(new Date().setDate(1)).toISOString().slice(0,10));
-                  setExportTo(todayStr()); setExportModal(true);
-                }}>
-                  <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-                  </svg>
-                </button>
-                <button className="btn-icon" title="Export All Members PDF" onClick={() => {
-                  setExportFrom(new Date(new Date().setDate(1)).toISOString().slice(0,10));
-                  setExportTo(todayStr()); setExportAllModal(true);
-                }}>
-                  <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/>
-                  </svg>
-                </button>
                 <div className="user-badge" onClick={() => setScreen('profile')}>
                   <div className="user-avatar">{initials(currentUser.name)}</div>
                   <span>{currentUser.name.split(' ')[0]}</span>
@@ -986,7 +1095,136 @@ export default function App() {
                 </svg>
                 <span>Home</span>
               </button>
+              <button className="nav-item" onClick={() => setScreen('credit-card')}>
+                <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/>
+                </svg>
+                <span>CC Bill</span>
+              </button>
               <button className="fab" onClick={openAdd}>+</button>
+              <button className="nav-item" onClick={() => { setExportFrom(new Date(new Date().setDate(1)).toISOString().slice(0,10)); setExportTo(todayStr()); setExportIsCC(false); setExportAllUsers(false); setExportModal(true); }}>
+                <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                </svg>
+                <span>PDF</span>
+              </button>
+              <button className="nav-item" onClick={() => setScreen('profile')}>
+                <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
+                </svg>
+                <span>Profile</span>
+              </button>
+            </nav>
+          </>
+        )}
+
+        {/* ── CREDIT CARD ── */}
+        {screen === 'credit-card' && currentUser && (
+          <>
+            <div className="app-header">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <button className="btn-icon" onClick={() => setScreen('dashboard')}>
+                  <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7"/>
+                  </svg>
+                </button>
+                <h1 style={{ fontFamily: 'var(--font-serif)', fontSize: '1.3rem', fontWeight: 400 }}>💳 CC Bill</h1>
+              </div>
+              <div className="user-badge" onClick={() => setScreen('profile')}>
+                <div className="user-avatar">{initials(currentUser.name)}</div>
+                <span>{currentUser.name.split(' ')[0]}</span>
+              </div>
+            </div>
+
+            <div className="screen" style={{ animation: 'none', minHeight: 'unset', flex: 1 }}>
+              {/* CC total card */}
+              <div className="total-card">
+                <div className="total-label">Credit Card Spent</div>
+                <div className="total-amount">
+                  <span className="currency-sym">₹</span>
+                  <span className="balance-amount negative">
+                    {fmt(ccDateRange !== 'all' && ccData?.total_spent != null ? ccData.total_spent : 0)}
+                  </span>
+                </div>
+                {ccDateRange !== 'all' && ccData && (
+                  <div style={{ padding: '8px 0 8px', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                    {ccData.groups.reduce((s, g) => s + g.expenses.length, 0)} transactions
+                  </div>
+                )}
+              </div>
+
+              {/* CC FilterBar */}
+              <FilterBar
+                dateRange={ccDateRange}
+                setDateRange={setCCDateRange}
+                filterFrom={ccFilterFrom}
+                setFilterFrom={setCCFilterFrom}
+                filterTo={ccFilterTo}
+                setFilterTo={setCCFilterTo}
+                categories={categories}
+                selectedCategories={ccSelCats}
+                setSelectedCategories={setCCSelCats}
+              />
+
+              {/* CC transaction list */}
+              <div className="categories-section">
+                {ccLoading ? (
+                  <div className="loader"><div className="spinner" /></div>
+                ) : !ccData?.groups?.length ? (
+                  <div className="empty-state">
+                    <div className="empty-icon">💳</div>
+                    <p>No CC entries yet.<br />Tap <strong>+</strong> to add your first one.</p>
+                  </div>
+                ) : (
+                  <>
+                    <div className="categories-list">
+                      {ccData.groups.map(g => (
+                        <CCCategoryCard
+                          key={g.category}
+                          group={g}
+                          getCategoryEmoji={getCategoryEmoji}
+                          onEdit={openCCEdit}
+                          onDelete={deleteCCExpense}
+                        />
+                      ))}
+                    </div>
+                    {ccDateRange === 'all' && ccData.hasMore && (
+                      <button
+                        className="btn btn-ghost"
+                        style={{ width: '100%', marginTop: 12, padding: '12px' }}
+                        onClick={() => loadCCExpenses(true)}
+                        disabled={ccLoadingMore}>
+                        {ccLoadingMore
+                          ? <><div className="spinner" style={{ width: 14, height: 14, borderWidth: 2, display: 'inline-block', marginRight: 8 }} />Loading…</>
+                          : 'Load 10 more'}
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* CC Bottom nav */}
+            <nav className="bottom-nav">
+              <button className="nav-item" onClick={() => setScreen('dashboard')}>
+                <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>
+                </svg>
+                <span>Home</span>
+              </button>
+              <button className="nav-item active">
+                <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/>
+                </svg>
+                <span>CC Bill</span>
+              </button>
+              <button className="fab" onClick={openCCAdd}>+</button>
+              <button className="nav-item" onClick={() => { setExportFrom(new Date(new Date().setDate(1)).toISOString().slice(0,10)); setExportTo(todayStr()); setExportIsCC(true); setExportAllUsers(false); setExportModal(true); }}>
+                <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                </svg>
+                <span>PDF</span>
+              </button>
               <button className="nav-item" onClick={() => setScreen('profile')}>
                 <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
@@ -1023,10 +1261,10 @@ export default function App() {
                 </div>
               </div>
               <div className="profile-actions">
-                <button className="btn btn-ghost" onClick={() => { setExportFrom(new Date(new Date().setDate(1)).toISOString().slice(0,10)); setExportTo(todayStr()); setExportModal(true); }}>
+                <button className="btn btn-ghost" onClick={() => { setExportFrom(new Date(new Date().setDate(1)).toISOString().slice(0,10)); setExportTo(todayStr()); setExportIsCC(false); setExportAllUsers(false); setExportModal(true); }}>
                   📄 Export My Report
                 </button>
-                <button className="btn btn-ghost" onClick={() => { setExportFrom(new Date(new Date().setDate(1)).toISOString().slice(0,10)); setExportTo(todayStr()); setExportAllModal(true); }}>
+                <button className="btn btn-ghost" onClick={() => { setExportFrom(new Date(new Date().setDate(1)).toISOString().slice(0,10)); setExportTo(todayStr()); setExportIsCC(false); setExportAllUsers(true); setExportModal(true); }}>
                   👥 Export All Members
                 </button>
                 <button className="btn btn-ghost profile-cat-btn" onClick={() => setCatManageOpen(true)}>
@@ -1048,7 +1286,19 @@ export default function App() {
                 </svg>
                 <span>Home</span>
               </button>
+              <button className="nav-item" onClick={() => setScreen('credit-card')}>
+                <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/>
+                </svg>
+                <span>CC Bill</span>
+              </button>
               <button className="fab" onClick={openAdd}>+</button>
+              <button className="nav-item" onClick={() => { setExportFrom(new Date(new Date().setDate(1)).toISOString().slice(0,10)); setExportTo(todayStr()); setExportIsCC(false); setExportAllUsers(false); setExportModal(true); }}>
+                <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                </svg>
+                <span>PDF</span>
+              </button>
               <button className="nav-item active">
                 <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
@@ -1109,19 +1359,40 @@ export default function App() {
         </div>
       </div>
 
-      {/* ── EXPORT MODAL ── */}
+      {/* ── UNIFIED EXPORT MODAL ── */}
       <div className={`modal-overlay${exportModal ? ' open' : ''}`} onClick={e => { if (e.target === e.currentTarget) setExportModal(false); }}>
         <div className="modal-sheet">
           <div className="modal-handle" />
           <div className="modal-header">
-            <div className="modal-title">Export Report</div>
+            <div className="modal-title">📄 Export Report</div>
             <button className="modal-close" onClick={() => setExportModal(false)}>✕</button>
           </div>
           <div className="modal-body">
-            <div className="export-toggle">
+
+            {/* Switch: Personal / All Members */}
+            <div className="export-switch-row">
+              <span className="export-switch-label">Scope</span>
+              <div className="export-switch-group">
+                <button className={`export-switch-btn${!exportAllUsers ? ' active' : ''}`} onClick={() => setExportAllUsers(false)}>👤 Personal</button>
+                <button className={`export-switch-btn${exportAllUsers ? ' active' : ''}`} onClick={() => setExportAllUsers(true)}>👥 All Members</button>
+              </div>
+            </div>
+
+            {/* Switch: Main Expenses / Credit Card */}
+            <div className="export-switch-row">
+              <span className="export-switch-label">Report type</span>
+              <div className="export-switch-group">
+                <button className={`export-switch-btn${!exportIsCC ? ' active' : ''}`} onClick={() => setExportIsCC(false)}>💸 Expenses</button>
+                <button className={`export-switch-btn export-switch-btn--cc${exportIsCC ? ' active' : ''}`} onClick={() => setExportIsCC(true)}>💳 Credit Card</button>
+              </div>
+            </div>
+
+            {/* Date mode */}
+            <div className="export-toggle" style={{ marginTop: 8 }}>
               <button className={exportMode === 'month' ? 'active' : ''} onClick={() => setExportMode('month')}>By Month</button>
               <button className={exportMode === 'range' ? 'active' : ''} onClick={() => setExportMode('range')}>Date Range</button>
             </div>
+
             {exportMode === 'month' ? (
               <div className="export-row">
                 <div className="form-group">
@@ -1144,6 +1415,7 @@ export default function App() {
                 <div className="form-group"><label>To</label><input type="date" className="form-control" value={exportTo} onChange={e => setExportTo(e.target.value)} /></div>
               </div>
             )}
+
             <label className="export-checkbox-row">
               <input type="checkbox" checked={exportDetailed} onChange={e => setExportDetailed(e.target.checked)} />
               <div className="export-checkbox-label">
@@ -1151,54 +1423,43 @@ export default function App() {
                 <span className="export-checkbox-sub">Include individual transactions inside each category</span>
               </div>
             </label>
-            <button className="btn btn-primary" style={{ marginTop: 16 }} onClick={doExport}>📄 Generate Report</button>
+
+            <button className="btn btn-primary" style={{ marginTop: 16 }} onClick={doExport}>
+              {exportIsCC ? '💳' : '📄'} Generate {exportAllUsers ? 'All Members' : 'My'} {exportIsCC ? 'CC' : ''} Report
+            </button>
           </div>
         </div>
       </div>
 
-      {/* ── EXPORT ALL MEMBERS MODAL ── */}
-      <div className={`modal-overlay${exportAllModal ? ' open' : ''}`} onClick={e => { if (e.target === e.currentTarget) setExportAllModal(false); }}>
+      {/* ── CC EXPENSE MODAL ── */}
+      <div className={`modal-overlay${ccModal ? ' open' : ''}`} onClick={e => { if (e.target === e.currentTarget) setCCModal(false); }}>
         <div className="modal-sheet">
           <div className="modal-handle" />
           <div className="modal-header">
-            <div className="modal-title">👥 All Members Report</div>
-            <button className="modal-close" onClick={() => setExportAllModal(false)}>✕</button>
+            <div className="modal-title">{ccEditId ? '💳 Edit CC Entry' : '💳 Add CC Entry'}</div>
+            <button className="modal-close" onClick={() => setCCModal(false)}>✕</button>
           </div>
           <div className="modal-body">
-            <div className="export-toggle">
-              <button className={exportMode === 'month' ? 'active' : ''} onClick={() => setExportMode('month')}>By Month</button>
-              <button className={exportMode === 'range' ? 'active' : ''} onClick={() => setExportMode('range')}>Date Range</button>
+            <div className="form-group">
+              <label>Amount (₹)</label>
+              <input className="form-control" type="number" inputMode="decimal" placeholder="0.00"
+                value={ccAmount} onChange={e => setCCAmount(e.target.value)} />
             </div>
-            {exportMode === 'month' ? (
-              <div className="export-row">
-                <div className="form-group">
-                  <label>Month</label>
-                  <select className="form-control" value={exportMonth} onChange={e => setExportMonth(Number(e.target.value))}>
-                    {['January','February','March','April','May','June','July','August','September','October','November','December'].map((m, i) =>
-                      <option key={i} value={i + 1}>{m}</option>)}
-                  </select>
-                </div>
-                <div className="form-group">
-                  <label>Year</label>
-                  <select className="form-control" value={exportYear} onChange={e => setExportYear(Number(e.target.value))}>
-                    {Array.from({ length: 4 }, (_, i) => new Date().getFullYear() - i).map(y => <option key={y} value={y}>{y}</option>)}
-                  </select>
-                </div>
-              </div>
-            ) : (
-              <div className="export-row">
-                <div className="form-group"><label>From</label><input type="date" className="form-control" value={exportFrom} onChange={e => setExportFrom(e.target.value)} /></div>
-                <div className="form-group"><label>To</label><input type="date" className="form-control" value={exportTo} onChange={e => setExportTo(e.target.value)} /></div>
-              </div>
-            )}
-            <label className="export-checkbox-row">
-              <input type="checkbox" checked={exportDetailed} onChange={e => setExportDetailed(e.target.checked)} />
-              <div className="export-checkbox-label">
-                <span>Detailed view</span>
-                <span className="export-checkbox-sub">Include individual transactions inside each category</span>
-              </div>
-            </label>
-            <button className="btn btn-primary" style={{ marginTop: 16 }} onClick={doExportAll}>👥 Generate All Members Report</button>
+            <div className="form-group">
+              <label>Category</label>
+              <CategoryDropdown value={ccCategory} onChange={setCCCategory} categories={categories} onAddNew={handleAddCategoryFromDropdown} />
+            </div>
+            <div className="form-group">
+              <label>Description</label>
+              <input className="form-control" placeholder="What was this for?" value={ccDesc} onChange={e => setCCDesc(e.target.value)} />
+            </div>
+            <div className="form-group">
+              <label>Date</label>
+              <input type="date" className="form-control" value={ccDate} onChange={e => setCCDate(e.target.value)} />
+            </div>
+            <button className="btn btn-primary" style={{ marginTop: 8 }} onClick={saveCCExpense}>
+              {ccEditId ? 'Update CC Entry' : 'Save CC Entry'}
+            </button>
           </div>
         </div>
       </div>
@@ -1227,6 +1488,59 @@ export default function App() {
 
       <Toast toasts={toasts} dismiss={id => setToasts(t => t.filter(x => x.id !== id))} />
     </>
+  );
+}
+
+// ─── CC Category Card ─────────────────────────────────────────────────────────
+function CCCategoryCard({ group, getCategoryEmoji, onEdit, onDelete }: {
+  group: CCExpenseGroup;
+  getCategoryEmoji: (name: string) => string;
+  onEdit: (e: CCExpense) => void;
+  onDelete: (id: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const icon = getCategoryEmoji(group.category);
+
+  return (
+    <div className={`category-card${expanded ? ' expanded' : ''}`}>
+      <div className="category-header" onClick={() => setExpanded(e => !e)}>
+        <div className="cat-icon">{icon}</div>
+        <div className="cat-info">
+          <div className="cat-name">{group.category}</div>
+          <div className="cat-count">{group.expenses.length} item{group.expenses.length !== 1 ? 's' : ''}</div>
+        </div>
+        <div className="cat-total" style={{ color: 'var(--danger)' }}>₹{fmt(group.total)}</div>
+        <svg className="cat-chevron" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7"/>
+        </svg>
+      </div>
+      <div className="expense-list">
+        <div className="expense-list-inner">
+          {group.expenses.map(exp => (
+            <div key={exp.id} className="expense-item">
+              <div className="expense-dot" />
+              <div className="expense-info">
+                <div className="expense-desc">{exp.description || '—'}</div>
+                <div className="expense-date">{formatDate(exp.date)}</div>
+              </div>
+              <div className="expense-amount expense">₹{fmt(exp.amount)}</div>
+              <div className="expense-actions">
+                <button className="btn-icon" title="Edit" onClick={() => onEdit(exp)}>
+                  <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
+                  </svg>
+                </button>
+                <button className="btn-icon" title="Delete" style={{ color: 'var(--danger)' }} onClick={() => onDelete(exp.id)}>
+                  <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
   );
 }
 

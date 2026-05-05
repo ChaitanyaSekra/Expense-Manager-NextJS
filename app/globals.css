@@ -241,19 +241,20 @@ select.form-control option { background: var(--bg-card); }
   position: fixed; bottom: 0; left: 50%; transform: translateX(-50%);
   width: 100%; max-width: 480px;
   display: flex; align-items: center; justify-content: space-around;
-  padding: 10px 16px calc(10px + var(--safe-bottom));
+  padding: 8px 8px calc(8px + var(--safe-bottom));
   background: var(--bg-card);
   border-top: 1px solid var(--border-soft);
   z-index: 20;
 }
 .nav-item {
   display: flex; flex-direction: column; align-items: center; gap: 3px;
-  color: var(--text-sub); font-size: 0.65rem; font-weight: 500;
-  letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--text-sub); font-size: 0.6rem; font-weight: 500;
+  letter-spacing: 0.03em; text-transform: uppercase;
   background: none; border: none; cursor: pointer; transition: var(--transition);
-  padding: 4px 12px;
+  padding: 4px 6px;
+  min-width: 0; flex: 1;
 }
-.nav-item svg { width: 22px; height: 22px; }
+.nav-item svg { width: 20px; height: 20px; }
 .nav-item.active { color: var(--accent); }
 
 .fab {
@@ -689,6 +690,45 @@ select.form-control option { background: var(--bg-card); }
 .export-checkbox-label { display: flex; flex-direction: column; gap: 2px; }
 .export-checkbox-label span:first-child { font-size: 0.9rem; color: var(--text); font-weight: 500; }
 .export-checkbox-sub { font-size: 0.75rem; color: var(--text-muted); line-height: 1.4; }
+
+/* ── Export Modal: scope/type switches ── */
+.export-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.export-switch-label {
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  flex-shrink: 0;
+  min-width: 72px;
+}
+.export-switch-group {
+  display: flex;
+  gap: 6px;
+  flex: 1;
+}
+.export-switch-btn {
+  flex: 1;
+  padding: 8px 6px;
+  background: var(--bg-input);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-sans);
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: var(--transition);
+  white-space: nowrap;
+}
+.export-switch-btn:hover { border-color: var(--accent-dim); color: var(--text); }
+.export-switch-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
+.export-switch-btn--cc.active { border-color: #4a90d9; color: #4a90d9; background: rgba(74,144,217,0.08); }
 
 /* ── Profile Screen ── */
 .profile-screen {

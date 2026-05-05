@@ -44,3 +44,7 @@ coverage/
 # package-lock.json
 # yarn.lock
 # pnpm-lock.yaml
+
+
+#admin
+app/api/admin/
